@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Build output (the exe is published as a GitHub Release instead)
+build/
+dist/
+
+# Local / editor
+*.log
+.vscode/
+.idea/
+st.txt
+result.txt
