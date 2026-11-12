@@ -15,3 +15,6 @@ dist/
 .idea/
 st.txt
 result.txt
+
+dist_release/
+build_release/
