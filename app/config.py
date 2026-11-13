@@ -106,6 +106,8 @@ class Settings:
     preset_defaults_seen: list[str] = field(default_factory=lambda: [
         p["id"] for p in _default_presets()])
     presets_version: int = field(default_factory=lambda: _presets_version())
+    whisper_fix: int = 1                  # 0 in older settings: see _whisper_fix()
+    emotion_strength: str = "normal"      # subtle / normal / strong
 
 
 def _migrate(data: dict) -> dict:
@@ -154,6 +156,22 @@ def _replace_presets(s: "Settings") -> None:
     s.presets_version = PRESETS_VERSION
 
 
+def _whisper_fix(s: "Settings") -> None:
+    """Once: characters that were given a whisper preset (Yumi, Raven) automatically get a
+    normal voice, since those whisper every line. Picking one again later sticks."""
+    from .voices import pick_preset
+    whisper = {p["id"] for p in s.presets if p.get("style") == "whisper"}
+    for chars in s.voices.values():
+        for name, rec in chars.items():
+            if isinstance(rec, dict) and rec.get("preset") in whisper \
+                    and not rec.get("voice_override"):
+                others = {k: v for k, v in chars.items() if k != name}
+                pid = pick_preset(rec.get("gender", "unknown"), others, s.presets)
+                if pid and pid not in whisper:
+                    rec["preset"] = pid
+    s.whisper_fix = 1
+
+
 class Config:
     def __init__(self, path: Path | None = None):
         self.path = path or (config_dir() / "settings.json")
@@ -181,6 +199,9 @@ class Config:
                 if p["id"] not in seen and p["id"] not in have:
                     s.presets.append(p)          # a new built-in voice
             s.preset_defaults_seen = sorted(seen | {p["id"] for p in defaults()})
+        if not data.get("whisper_fix"):
+            _whisper_fix(s)
+            self._migrated = True
         if not data.get("ocr_mode_v8"):            # the old default "auto" -> "learn"
             if s.ocr_mode == "auto":
                 s.ocr_mode = "learn"

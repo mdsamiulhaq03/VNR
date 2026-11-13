@@ -56,6 +56,7 @@ class Bridge(QObject):
     voice_ready = Signal(str)        # voice key
     shot = Signal(object, object, str)   # screenshot image, ShotResult, error
     detected = Signal(object, object, str, str)   # name rect, text rect, name read, error
+    moods_ready = Signal(str)                     # character whose mood voices are ready
 
 
 def _physical_to_logical(region: list[int]) -> QRect:
@@ -169,9 +170,13 @@ class MainWindow(QMainWindow):
         self.queue.expressive = lambda: self.cfg.settings.expressive
         self.queue.emotion_voices = lambda: self.cfg.settings.emotion_voices
         self.queue.vocalize = lambda: self.cfg.settings.vocalize
+        self.queue.strength = lambda: self.cfg.settings.emotion_strength
         self.queue.quick_steps = self._quick_steps
         self.queue.on_done = lambda _line: self.bridge.line_done.emit()
         self.bridge.line_done.connect(self._schedule_advance)
+        self._mood_demo: list = []                    # Cast → Moods: lines still to play
+        self.bridge.line_done.connect(self._next_mood)
+        self.bridge.moods_ready.connect(self._start_mood_demo)
         self._advance_token = 0
         self.ocr = OcrSource(self.bridge.lines.emit, on_status=self.bridge.status.emit,
                              on_preview=self.bridge.preview.emit,
@@ -264,6 +269,7 @@ class MainWindow(QMainWindow):
         self.chars.gender_changed.connect(self._char_gender)
         self.chars.reroll.connect(self._char_reroll)
         self.chars.preview.connect(self._preview)
+        self.chars.preview_moods.connect(self._preview_moods)
         self.chars.reassign_all.connect(self._reassign_all)
         self.chars.refresh.connect(self._refresh_voices)
         self.chars.menu.connect(self._char_menu)
@@ -1380,6 +1386,7 @@ class MainWindow(QMainWindow):
             self.shots.done()
 
     def _show_and_speak(self, name: str, text: str, auto_advance: bool = True):
+        self._mood_demo.clear()                       # a game line ends a mood demo
         new = name not in self.cfg.characters(self.game)
         rec = self.cfg.character(self.game, name)
         design = self.cfg.design(self.game, name)
@@ -1392,7 +1399,10 @@ class MainWindow(QMainWindow):
         self._update_stats()
         self.preview.set_name_on_top(name != NARRATOR)
         self._show_line(name, text, rec, design)
-        self.history.add(name, text)
+        mood = ""
+        if self.cfg.settings.expressive:
+            mood = emotion.parse(text, strength=self.cfg.settings.emotion_strength).mood
+        self.history.add(name, text, mood)
         self.transcript.add(name, text)
         self._advance_ok = auto_advance      # screenshots never move the game on
         if name == NARRATOR and not self.cfg.settings.read_narrator:
@@ -1461,7 +1471,7 @@ class MainWindow(QMainWindow):
             label = design.get("label") if rec.get("preset") else "custom voice"
             self.lbl_voice.setText(f"{label} · {voices.instruct(design)}")
         if self.cfg.settings.expressive:
-            mood = emotion.parse(text).mood
+            mood = emotion.parse(text, strength=self.cfg.settings.emotion_strength).mood
             if mood:
                 self.lbl_voice.setText(f"{self.lbl_voice.text()} · {mood}")
         self.lbl_text.setText(text)
@@ -1476,7 +1486,59 @@ class MainWindow(QMainWindow):
     def _speak(self, name: str, text: str):
         self.queue.say(self._make_line(name, text))
 
+    # ---- Cast → Moods: the same line in every mood ----
+    MOOD_DEMO = [("", "normal"), ("*Seductively* ", "seductive"), ("*moans softly* ", "aroused"),
+                 ("*whispers* ", "whisper"), ("*smiles* ", "happy"), ("*sadly* ", "sad"),
+                 ("*angrily* ", "angry")]
+    MOOD_SAMPLE = "I've been waiting for you all night."
+
+    def _preview_moods(self, name: str):
+        rec = self.cfg.character(self.game, name)
+        if rec.get("voice_override"):
+            self._set_status("Moods need a preset or custom voice (not your own or a "
+                             "Windows voice)")
+            return
+        self._mood_demo.clear()
+        design = self.cfg.design(self.game, name)
+        moods = [m for _p, m in self.MOOD_DEMO if m != "normal"]
+        use_variants = self.cfg.settings.emotion_voices and \
+            self.cfg.settings.emotion_strength != "subtle"
+
+        def work():
+            try:
+                if use_variants and self.bank.enabled() and self.vs.available():
+                    self.bridge.status.emit(f"Preparing {name}'s voice…")
+                    self.bank.get_profile(design)
+                    for i, m in enumerate(moods, 1):
+                        self.bridge.status.emit(f"Preparing {name}'s moods {i}/{len(moods)} "
+                                                f"({m})…")
+                        self.bank.ensure_variant(design, m)
+            finally:
+                self.bridge.moods_ready.emit(name)
+        threading.Thread(target=work, name="moods", daemon=True).start()
+
+    def _start_mood_demo(self, name: str):
+        self._mood_demo[:] = [(name, prefix + self.MOOD_SAMPLE) for prefix, _m in self.MOOD_DEMO]
+        self._advance_ok = False                      # never moves the game on
+        self._set_status(f"Playing {name} in every mood")
+        self._play_next_mood()
+
+    def _next_mood(self):
+        if self._mood_demo:
+            QTimer.singleShot(450, self._play_next_mood)
+
+    def _play_next_mood(self):
+        if not self._mood_demo:
+            return
+        name, text = self._mood_demo.pop(0)
+        rec = self.cfg.character(self.game, name)
+        design = self.cfg.design(self.game, name)
+        self._show_line(name, text, rec, design)
+        self.queue.say(Line(self.game, name, text, dict(rec),
+                            iso_lang(self.cfg.settings.ocr_language), design))
+
     def _preview(self, name: str):
+        self._mood_demo.clear()
         who = "the narrator" if name == NARRATOR else name
         line = f"Hi, I'm {who}. This is what my voice sounds like."
         self._show_line(name, line, self.cfg.character(self.game, name),
@@ -1801,7 +1863,7 @@ class MainWindow(QMainWindow):
             "toggle": (hk.get("toggle", ""), self._toggle_ocr),
             "replay": (hk.get("replay", ""), self.queue.replay),
             "pause": (hk.get("pause", ""), self._toggle_pause),
-            "stop": (hk.get("stop", ""), self.queue.stop),
+            "stop": (hk.get("stop", ""), lambda: (self._mood_demo.clear(), self.queue.stop())),
             "advance": (hk.get("advance", "F7"), self._toggle_auto),
             "areas": (hk.get("areas", "F6"), self._pick_areas_sequence),
         }

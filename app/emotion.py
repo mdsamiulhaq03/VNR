@@ -53,18 +53,18 @@ MOODS: list[Mood] = [
          shape="trail"),
     Mood("dominant", "angry", 0.95,
          r"command|stern|firmly|demand|orders?\b|authoritativ|dominant|grabs?\b|possessiv"),
-    Mood("submissive", "whisper", 0.93, r"obedient|meek|submissiv"),
+    Mood("submissive", "", 0.95, r"obedient|meek|submissiv"),
     Mood("tender", "seductive", 0.95,
          r"loving|tender|warmly|affection|gently|sweetly|caress|cuddl|nuzzl|hugs?\b|hugging"
          r"|embrac|strok"),
     Mood("kiss", "seductive", 0.95, r"kiss|chu\b|smooch|pecks?\b"),
+    # The whisper voice is a real whisper: only for lines that say so.
     Mood("whisper", "whisper", 0.9,
-         r"whisper|murmur|under (?:her |his |my )?breath|quietly|softly|into (?:your|his|her) ear"
-         r"|hushed"),
-    Mood("shy", "whisper", 0.95,
+         r"whisper|murmur|under (?:her |his |my )?breath|into (?:your|his|her) ear|hushed"),
+    Mood("shy", "", 0.95,
          r"blush|shy|shily|nervous|stammer|stutter|embarrass|fidget|timid|fluster"
-         r"|avoids? (?:eye|your gaze)|hesita|bashful|sheepish|gulp"),
-    Mood("scared", "whisper", 1.08,
+         r"|avoids? (?:eye|your gaze)|hesita|bashful|sheepish|gulp", shape="trail"),
+    Mood("scared", "", 1.05,
          r"scared|afraid|fear|panic|terrif|shaking|frighten|horrif", shape="trail"),
     Mood("playful", "happy", 1.05,
          r"playful|sticks? (?:her |his )?tongue|pokes?\b|giggly|cheek(?:y|ily)|bubbly|wiggl"
@@ -73,11 +73,12 @@ MOODS: list[Mood] = [
     Mood("happy", "happy", 1.05,
          r"smil|grin|cheer|happ|excit|beam|squeal|delight|ecstatic|joyful|gleeful|elated"),
     Mood("drunk", "seductive", 0.88, r"drunk|tipsy|slur|hiccup"),
-    Mood("sleepy", "whisper", 0.85, r"sleep|yawn|drows|grogg", tag="[sigh]"),
+    Mood("sleepy", "", 0.88, r"sleep|yawn|drows|grogg", tag="[sigh]"),
     Mood("sad", "sad", 0.9,
          r"sad|sobs?\b|sobbing|cr(?:y|ies|ying)\b|tear|sniff|frown|sorrow|heartbroken"
          r"|choked? up|depress|miserabl|gloom|melanchol", shape="trail"),
     Mood("jealous", "sad", 0.97, r"jealous|sulk|envious"),
+    Mood("soft", "", 0.94, r"quiet|soft|faint|barely", shape="trail"),
     Mood("cold", "", 0.97,
          r"cold|mock|smug|sarcas|dismissiv|scoff|rolls? (?:her |his )?eyes|icily|bored"),
     Mood("angry", "angry", 1.06,
@@ -95,7 +96,7 @@ MOODS: list[Mood] = [
 # Moods inferred from the dialogue itself (no direction).
 _INFERRED = {
     "excited": Mood("excited", "happy", 1.05, ""),
-    "thought": Mood("thought", "whisper", 0.95, ""),
+    "thought": Mood("thought", "", 0.95, ""),
 }
 NEUTRAL = Mood("", "", 1.0, "")
 BY_NAME = {m.name: m for m in MOODS} | _INFERRED
@@ -131,8 +132,14 @@ _PAREN = re.compile(r"\(\s*([^()]{1,40}?)\s*\)")
 _HEARTS = re.compile(r"[♥♡❤❣💕💖💗💓💞💘]")
 _NOTES = re.compile(r"[♪♫☆★]")
 _TILDE = re.compile(r"[~～〜]+")
-_MOAN_WORDS = re.compile(
-    r"\b(?:a+hn+|a+h{2,}|nn+g+h*|hn{2,}|m+h+|m{2,}h|ha{2,}h*|u+hn+|ngh+|ohh+|oh god)\b", _I)
+_MOAN_WORDS = re.compile(r"\b(?:a+hn+|nn+g+h*|hn+g+h*|hn{2,}|m+h+|m{2,}h|ha{2,}h*|u+hn+|ngh+)\b",
+                         _I)
+# These are moans only when there are several ("Ahh… ohh… ahh!"); one "Ahh!" is surprise.
+_MAYBE_MOANS = re.compile(r"\b(?:a+h{2,}|o+h{2,}|oh god)\b", _I)
+
+
+def _moaning(text: str) -> bool:
+    return bool(_MOAN_WORDS.search(text)) or len(_MAYBE_MOANS.findall(text)) >= 2
 _STUTTER = re.compile(r"(?<![\w-])([a-z]{1,2})-\1", _I)
 _CAPS = re.compile(r"\b[A-Z]{3,}\b")
 _ANGRY_WORDS = re.compile(r"\b(?:hate|damn|idiot|stupid|shut up|how dare|get out|stop it|"
@@ -247,13 +254,17 @@ def _capitalize(text: str) -> str:
     return text
 
 
+STRENGTHS = ("subtle", "normal", "strong")
+
+
 def parse(text: str, *, act: bool = True, vocalize: bool = True,
-          tags: set[str] | list[str] | None = None) -> Directed:
+          tags: set[str] | list[str] | None = None, strength: str = "normal") -> Directed:
     """Stage directions out, mood in.
 
     act: perform the mood (shaping, sounds, tags); off = only remove what isn't spoken.
     vocalize: put a sound in place of actions like *moans* / *kisses*.
     tags: expression tags the TTS engine supports (None = none).
+    strength: "subtle" (no emotional voices, half the speed change), "normal", "strong".
     """
     if not text:
         return Directed("")
@@ -262,7 +273,7 @@ def parse(text: str, *, act: bool = True, vocalize: bool = True,
 
     mood: Mood | None = None
     chosen = ""
-    already_sound = bool(_MOAN_WORDS.search(re.sub(_PH + r"\d+" + _PH, " ", raw)))
+    already_sound = _moaning(re.sub(_PH + r"\d+" + _PH, " ", raw))
     fills: list[str] = []
     for d in dirs:
         m = _mood_of(d)
@@ -299,7 +310,7 @@ def parse(text: str, *, act: bool = True, vocalize: bool = True,
         spoken = _capitalize(_CAPS.sub(lambda m: m.group(0).lower(), spoken))
 
     if mood is None:
-        moans = bool(_MOAN_WORDS.search(spoken))
+        moans = _moaning(spoken)
         if thought:
             mood = _INFERRED["thought"]
         elif moans:
@@ -332,10 +343,11 @@ def parse(text: str, *, act: bool = True, vocalize: bool = True,
         out.speed *= 1.05
         shape = "exclaim"
     elif chosen and _SOFT.search(chosen):
-        out.speed *= 0.97
-        if not out.variant:
-            out.variant = "whisper"
-    out.speed = round(min(1.3, max(0.7, out.speed)), 3)
+        out.speed *= 0.97                       # softer, never a whisper by itself
+    k = {"subtle": 0.5, "strong": 1.5}.get(strength, 1.0)
+    out.speed = round(min(1.3, max(0.7, 1 + (out.speed - 1) * k)), 3)
+    if strength == "subtle":
+        out.variant = ""
     out.spoken = _shape(out.spoken, shape)
     if dirs:                            # "*Nervously* uh, hi" -> "Uh, hi"
         out.spoken = _capitalize(out.spoken)

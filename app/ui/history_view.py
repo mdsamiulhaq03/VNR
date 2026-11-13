@@ -24,12 +24,13 @@ class HistoryView(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         self.stack = QStackedWidget()
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["TIME", "SPEAKER", "LINE"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["TIME", "SPEAKER", "LINE", "MOOD"])
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         h.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         h.setSectionResizeMode(2, QHeaderView.Stretch)
+        h.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         h.setHighlightSections(False)
         h.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.verticalHeader().setVisible(False)
@@ -58,7 +59,7 @@ class HistoryView(QWidget):
                    icon_button("file-down", "Export to a text file…", self._export),
                    icon_button("eraser", "Clear the history", self._clear))
 
-    def add(self, speaker: str, text: str) -> None:
+    def add(self, speaker: str, text: str, mood: str = "") -> None:
         sb = self.table.verticalScrollBar()
         at_bottom = sb.value() >= sb.maximum() - 4
         r = self.table.rowCount()
@@ -70,7 +71,9 @@ class HistoryView(QWidget):
         who.setForeground(Qt.gray)
         line = QTableWidgetItem(text)
         line.setData(Qt.UserRole, (speaker, text))
-        for c, it in enumerate((t, who, line)):
+        md = QTableWidgetItem(mood)
+        md.setForeground(Qt.gray)
+        for c, it in enumerate((t, who, line, md)):
             self.table.setItem(r, c, it)
         while self.table.rowCount() > MAX_ENTRIES:
             self.table.removeRow(0)
@@ -91,7 +94,9 @@ class HistoryView(QWidget):
     def _text(self, r: int) -> str:
         sp, text = self.table.item(r, 2).data(Qt.UserRole)
         stamp = self.table.item(r, 0).text()
-        return f"[{stamp}]  " + (text if sp == NARRATOR else f"{sp}: {text}")
+        mood = self.table.item(r, 3).text() if self.table.item(r, 3) else ""
+        return f"[{stamp}]  " + (text if sp == NARRATOR else f"{sp}: {text}") + \
+            (f"  ({mood})" if mood else "")
 
     def _rows(self, selected_only: bool) -> list[int]:
         rows = sorted({i.row() for i in self.table.selectedIndexes()}) if selected_only else []
@@ -114,5 +119,6 @@ class HistoryView(QWidget):
     def _filter(self, q: str):
         q = q.strip().lower()
         for r in range(self.table.rowCount()):
-            hay = (self.table.item(r, 1).text() + " " + self.table.item(r, 2).text()).lower()
+            hay = " ".join(self.table.item(r, c).text() for c in (1, 2, 3)
+                           if self.table.item(r, c)).lower()
             self.table.setRowHidden(r, bool(q) and q not in hay)

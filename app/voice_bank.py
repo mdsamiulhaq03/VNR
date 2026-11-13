@@ -57,7 +57,9 @@ MOOD_SCRIPTS: dict[str, tuple[str, float]] = {
     "angry": ("Are you serious right now?! I told you a hundred times. Don't you dare walk "
               "away from me!", 1.05),
 }
-_BREATHY = ("whisper", "aroused")          # moods whose reference may sound whispery
+_BREATHY = ("whisper",)                    # moods whose reference may sound whispery
+# Key suffix per mood; bump one to remake that mood's clones (aroused2: no longer whispery).
+MOOD_KEYS = {m: m for m in MOOD_SCRIPTS} | {"aroused": "aroused2"}
 VARIANT_TRIES = 3
 
 MAX_TRIES = 5
@@ -145,7 +147,7 @@ class VoiceBank:
         the background, so the line itself never waits for it)."""
         if not self.enabled() or mood not in MOOD_SCRIPTS:
             return ""
-        key = f"{voices.voice_key(design)}#{mood}"
+        key = self._variant_key(design, mood)
         e = self.cfg.settings.vs_voice_bank.get(key)
         if e and e.get("id"):
             return e["id"]
@@ -157,26 +159,45 @@ class VoiceBank:
                          daemon=True).start()
         return ""
 
+    @staticmethod
+    def _variant_key(design: dict, mood: str) -> str:
+        return f"{voices.voice_key(design)}#{MOOD_KEYS[mood]}"
+
     def _make_variant(self, design: dict, mood: str, key: str) -> None:
         try:
+            if self._build_variant(design, mood, key):
+                self.on_status(f"{design.get('label')}'s {mood} voice is ready")
+        finally:
+            with self._guard:
+                self._building.discard(key)
+
+    def _build_variant(self, design: dict, mood: str, key: str) -> str:
+        """Make and save one mood variant (blocks a few seconds). '' if it failed."""
+        with self._lock(key):
+            e = self.cfg.settings.vs_voice_bank.get(key)
+            if e and e.get("id"):
+                return e["id"]
             base = self.get_profile(design)
             if not base or not self.vs.available():
-                return
+                return ""
             try:
                 pid = self._create_variant(design, mood, base)
             except TTSError as e:
                 self._failed.add(key)
                 self.on_status(f"Couldn't make {design.get('label')}'s {mood} voice: {e}")
-                return
+                return ""
             with self.cfg._lock:
                 self.cfg.settings.vs_voice_bank[key] = {
                     "id": pid, "label": f"{design.get('label')} ({mood})"}
                 self.cfg.save()
-            self.on_status(f"{design.get('label')}'s {mood} voice is ready")
-            self.on_ready(key)
-        finally:
-            with self._guard:
-                self._building.discard(key)
+        self.on_ready(key)
+        return pid
+
+    def ensure_variant(self, design: dict, mood: str) -> str:
+        """The mood variant's id, made now if needed (blocks). '' if it can't be made."""
+        if not self.enabled() or mood not in MOOD_SCRIPTS:
+            return ""
+        return self._build_variant(dict(design), mood, self._variant_key(design, mood))
 
     def _create_variant(self, design: dict, mood: str, base: str) -> str:
         """The same voice in a mood: its own clone reads the mood script (so the timbre is
@@ -243,7 +264,9 @@ class VoiceBank:
         """Delete clones no character or preset uses any more (after deletes / merges).
         A mood variant ("<key>#<mood>") lives as long as its voice."""
         bank = self.cfg.settings.vs_voice_bank
-        orphans = [k for k in list(bank) if k.split("#")[0] not in used_keys]
+        current = set(MOOD_KEYS.values())
+        orphans = [k for k in list(bank) if k.split("#")[0] not in used_keys
+                   or ("#" in k and k.split("#", 1)[1] not in current)]   # an old mood version
         ids = []
         for k in orphans:
             e = bank.pop(k)

@@ -211,6 +211,8 @@ def pick_preset(gender: str, others: dict[str, dict], presets: list[dict]) -> st
     """An unused preset of that gender in this game ('' if they're all taken)."""
     used = {o.get("preset") for o in others.values() if o.get("preset")}
     pool = [p for p in presets if gender == "unknown" or p.get("gender") == gender]
+    # Whisper voices (Yumi, Raven) whisper every line: only when nothing else is free.
+    pool.sort(key=lambda p: p.get("style") == "whisper")
     for p in pool:
         if p["id"] not in used:
             return p["id"]

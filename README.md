@@ -193,7 +193,7 @@ The list on the left shows every character (search at the top); the editor on th
 - **Voice**: any **preset**, a **custom voice** (choose pitch and style yourself), one of **your own VoiceStudio voices**, or a **Windows voice**.
 - **Accent**: change this character's accent only.
 - **Age**: make this character sound younger or older (young adult, middle-aged or elderly), with any preset or custom voice. VoiceStudio makes the new voice on the next line (a few seconds, once).
-- **✨** (sparkles): switch to the next free preset. **Preview**: hear the voice.
+- **✨** (sparkles): switch to the next free preset. **Preview**: hear the voice. **Moods**: hear the character in every mood (normal, seductive, aroused, whisper, happy, sad, angry). The first time, the mood voices are made first (about 15 s).
 - **⋯**: **rename**, merge or delete.
 
 **Renaming:** **⋯ → Rename…** changes how a character is shown (e.g. "PRESENTER" → "Presenter"). The voice stays the same, and when the game shows the old name again, the line still goes to the renamed character.
@@ -240,7 +240,7 @@ Stage directions are **never read aloud**. The mood they describe is performed i
 | `(She's so beautiful…)` | an inner thought, whispered |
 | `WHAT ARE YOU DOING?!` | angry (not spelled out) |
 
-Around 25 moods are recognised (seductive, aroused, begging, dominant, tender, shy, scared, playful, happy, sad, jealous, cold, angry, drunk, sleepy, …), from adverbs like *Teasingly* or *Nervously* and actions like *bites her lip* or *blushes*. Hearts, a trailing `~`, moans, stutters ("I-I…") and SHOUTING are read as cues too. Each voice gets up to six **emotional versions** (seductive, aroused, whisper, happy, sad, angry). They're made from the same voice, so it still sounds like her, in the background the first time a mood comes up (about 2–3 s each). The current mood is shown next to the voice on the Read page.
+Around 25 moods are recognised (seductive, aroused, begging, dominant, tender, shy, scared, playful, happy, sad, jealous, cold, angry, drunk, sleepy, …), from adverbs like *Teasingly* or *Nervously* and actions like *bites her lip* or *blushes*. Hearts, a trailing `~`, moans, stutters ("I-I…") and SHOUTING are read as cues too. Each voice gets up to six **emotional versions** (seductive, aroused, whisper, happy, sad, angry). They're made from the same voice, so it still sounds like her, in the background the first time a mood comes up (about 2–3 s each). The current mood is shown next to the voice on the Read page and in History. Only lines that really whisper (`*whispers*`, `*murmurs into your ear*`) use the whisper voice; shy, nervous, soft or thinking lines keep the normal voice, just slower. **Settings → Emotion strength**: *Subtle* (sounds and pacing only), *Normal*, or *Strong*.
 
 <br clear="right">
 
@@ -250,7 +250,7 @@ Your own word replacements, applied before a line is spoken. Use them for names 
 **Game words** (below the rules): names, places and made-up words of this game that the spell-fixer must never "correct". Words that appear in **3 different lines** are learned automatically (shown dimmed); add your own, or remove one (a removed word isn't learned again).
 
 ### History page
-Every line read this session in a table (time, speaker, line), with **search** in the toolbar. **Double-click** a line to hear it again; the toolbar can play, copy, export to a text file, or clear.
+Every line read this session in a table (time, speaker, line, mood), with **search** in the toolbar. **Double-click** a line to hear it again; the toolbar can play, copy, export to a text file, or clear.
 
 ### Settings
 <img src="docs/settings.png" width="420" align="right" alt="Settings">
@@ -314,6 +314,7 @@ Inside the app window:
 | **Act out emotions** | Perform `*stage directions*`, hearts, laughs, sighs and surprise. Directions are never read aloud, even with this off. |
 | **Emotional voice variants** | Seductive / aroused / whisper / happy / sad / angry version of each voice, made in the background on first use. |
 | **Voice action sounds** | `*moans*`, `*kisses*`, `*pants*`… become "Mmmh…", "Mwah.", "Haah… haah…" instead of silence. |
+| **Emotion strength** | *Subtle*: laughs, sighs and pacing only, no emotional voices. *Normal*. *Strong*: bigger changes in pace. |
 | **Voice quality** | *Fast* (starts talking quickest), *Balanced* (recommended), *Best* (slowest). |
 | **Quick start** | On by default. Each line's first sentence is made on *Fast* quality so the voice starts about 1 s sooner; the rest of the line uses the quality above. Same voice either way. |
 | **Save each character's voice** | Keeps every voice identical on every line. Leave it on: without it, VoiceStudio re-invents the voice for every sentence. |

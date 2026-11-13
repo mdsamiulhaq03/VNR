@@ -33,6 +33,7 @@ class CharacterCard(QWidget):
     gender_changed = Signal(str, str)    # name, gender
     reroll = Signal(str)
     preview = Signal(str)
+    preview_moods = Signal(str)
     menu = Signal(str, object)           # name, global position
 
     def __init__(self, name: str, rec: dict, sources: list[tuple[str, str]]):
@@ -59,6 +60,12 @@ class CharacterCard(QWidget):
         top.addLayout(info, 1)
         top.addWidget(button("Preview", "play", tip="Hear this character's voice",
                              slot=lambda: self.preview.emit(self.name)))
+        self.btn_moods = button("Moods", "audio-lines",
+                                tip="Hear this character in every mood: normal, seductive, "
+                                    "aroused, whisper, happy, sad, angry (the first time, the "
+                                    "mood voices are made first)",
+                                slot=lambda: self.preview_moods.emit(self.name))
+        top.addWidget(self.btn_moods)
         top.addWidget(icon_button("sparkles", "Give this character a different voice",
                                   lambda: self.reroll.emit(self.name)))
         b_more = icon_button("ellipsis", "Rename, merge or delete")
@@ -160,6 +167,7 @@ class CharacterCard(QWidget):
         self.custom_row.setVisible(custom)
         self.cb_accent.setEnabled(not override)
         self.cb_age.setEnabled(not override)
+        self.btn_moods.setEnabled(not override)       # your own / Windows voice: no moods
         # Without an override the design's age *is* the voice's own age: show it.
         own = "" if rec.get("age_override") else (design or {}).get("age", "")
         self.cb_age.setItemText(0, f"Voice's own age ({own})" if own else "Voice's own age")
@@ -188,6 +196,7 @@ class CharactersView(QWidget):
     gender_changed = Signal(str, str)
     reroll = Signal(str)
     preview = Signal(str)
+    preview_moods = Signal(str)
     reassign_all = Signal()
     refresh = Signal()
     menu = Signal(str, object)
@@ -260,6 +269,7 @@ class CharactersView(QWidget):
         card.gender_changed.connect(self.gender_changed.emit)
         card.reroll.connect(self.reroll.emit)
         card.preview.connect(self.preview.emit)
+        card.preview_moods.connect(self.preview_moods.emit)
         card.menu.connect(self.menu.emit)
         self.md.add(name, self._row(name, rec, design), card, name)
         self.cards[name] = card

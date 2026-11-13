@@ -280,7 +280,16 @@ class SettingsView(QWidget):
         self.cb_vocal.setChecked(s.vocalize)
         self.cb_vocal.toggled.connect(lambda on: self._flag("vocalize", on))
         vf.addRow("", self.cb_vocal)
-        for cb in (self.cb_moodv, self.cb_vocal):
+        self.cb_strength = QComboBox()
+        for key, text in (("subtle", "Subtle: sounds and pacing only, no emotional voices"),
+                          ("normal", "Normal"),
+                          ("strong", "Strong: bigger changes in pace")):
+            self.cb_strength.addItem(text, key)
+        self.cb_strength.setCurrentIndex(max(0, self.cb_strength.findData(s.emotion_strength)))
+        self.cb_strength.currentIndexChanged.connect(
+            lambda _=0: self._value("emotion_strength", self.cb_strength.currentData()))
+        vf.addRow("Emotion strength:", self.cb_strength)
+        for cb in (self.cb_moodv, self.cb_vocal, self.cb_strength):
             cb.setEnabled(s.expressive)
         self.cb_quality = QComboBox()
         for key, label in QUALITY:
@@ -463,8 +472,12 @@ class SettingsView(QWidget):
     def _expr(self, on: bool):
         self.cfg.settings.expressive = on
         self.cfg.save()
-        for cb in (self.cb_moodv, self.cb_vocal):
+        for cb in (self.cb_moodv, self.cb_vocal, self.cb_strength):
             cb.setEnabled(on)
+
+    def _value(self, name: str, value):
+        setattr(self.cfg.settings, name, value)
+        self.cfg.save()
 
     def _flag(self, name: str, on: bool):
         setattr(self.cfg.settings, name, on)

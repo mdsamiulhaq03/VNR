@@ -49,6 +49,7 @@ class SpeechQueue:
         self.expressive: Callable[[], bool] = lambda: True
         self.emotion_voices: Callable[[], bool] = lambda: True   # emotional clone variants
         self.vocalize: Callable[[], bool] = lambda: True         # *moans* -> "Mmmh…"
+        self.strength: Callable[[], str] = lambda: "normal"      # subtle / normal / strong
         self.on_done: Callable[[Line], None] = lambda line: None   # line fully played
         # Steps for a line's FIRST sentence (e.g. 8 = fast) so the voice starts sooner;
         # None = same quality as the rest.
@@ -183,7 +184,8 @@ class SpeechQueue:
         """The line with stage directions removed, and the mood to perform it in."""
         act = self.expressive()
         return emotion.parse(line.text, act=act, vocalize=self.vocalize(),
-                             tags=self.expression_tags if act else None)
+                             tags=self.expression_tags if act else None,
+                             strength=self.strength())
 
     def _variant(self, line: Line, d: emotion.Directed, profile_id: str) -> str:
         """The emotional clone for this mood if it's ready, else the normal clone (the

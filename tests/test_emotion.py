@@ -52,7 +52,7 @@ def test_parentheses_and_emphasis_are_kept():
 
 def test_fullwidth_asterisks():
     d = p("＊blushes＊ Th-thanks…")
-    assert d.spoken == "Th-thanks…" and d.mood == "shy" and d.variant == "whisper"
+    assert d.spoken == "Th-thanks…" and d.mood == "shy" and d.variant == ""
 
 
 def test_vocalized_actions():
@@ -80,7 +80,7 @@ def test_dialogue_cues():
     assert d.mood == "aroused" and d.spoken.startswith("Ahn… nngh")
     assert p("I-I didn't mean it…").mood == "shy"
     d = p("(She's so beautiful…)")
-    assert d.spoken == "She's so beautiful…" and d.variant == "whisper"
+    assert d.spoken == "She's so beautiful…" and d.mood == "thought" and d.variant == ""
     d = p("WHAT ARE YOU DOING?!")
     assert d.spoken == "What are you doing?!" and d.mood == "angry"
 
@@ -293,3 +293,121 @@ def test_auto_detected_areas_split_a_styled_name_line():
     name, text = areas_from_result(res, (1920, 1080))
     assert name is None and text[1] < 690
     assert areas_from_result(ShotResult(), (100, 100)) == (None, None)
+
+
+# ------------------------------------------------------------- no stray whispers
+def test_only_real_whispers_use_the_whisper_voice():
+    for line in ("*softly* Hi there.", "*blushes* Hi there.", "I-I… don't… know…",
+                 "(thinking about it…)", "*nervously* Okay.", "*quietly* Okay.",
+                 "*sleepily* Morning.", "*scared* What was that?", "*smiles softly* Hi."):
+        assert p(line).variant != "whisper", line
+    assert p("*softly* Hi there.").mood == "soft"
+    assert p("*smiles softly* Hi.").mood == "happy"
+    for line in ("*whispers* Come here.", "*whispering* Come here.",
+                 "*murmurs into your ear* Come here."):
+        assert p(line).variant == "whisper", line
+
+
+def test_one_ahh_is_not_a_moan():
+    assert p("Ahh! A bug!").mood != "aroused"
+    assert p("Oh god, I'm late.").mood != "aroused"
+    assert p("Ahn… nngh…").mood == "aroused"
+    assert p("Ahh… ohh… ahh…").mood == "aroused"
+
+
+def test_emotion_strength():
+    base = p("*Seductively* Hi there you.")
+    subtle = p("*Seductively* Hi there you.", strength="subtle")
+    strong = p("*Seductively* Hi there you.", strength="strong")
+    assert subtle.variant == "" and base.variant == strong.variant == "seductive"
+    assert abs((1 - subtle.speed) - (1 - base.speed) / 2) < 0.01
+    assert strong.speed < base.speed and strong.speed >= 0.7
+    assert p("*angrily* Out!", strength="strong").speed <= 1.3
+
+
+def test_aroused_variant_is_remade_and_old_one_pruned():
+    from app.voice_bank import MOOD_KEYS
+    assert MOOD_KEYS["aroused"] == "aroused2"
+    c, vs, bank, ready = _bank()
+    design = voices.effective({"preset": "f-natasha"}, presets.by_id(c.settings.presets))
+    key = voices.voice_key(design)
+    assert bank.ensure_variant(design, "aroused")             # made right away
+    assert f"{key}#aroused2" in c.settings.vs_voice_bank
+    c.settings.vs_voice_bank[f"{key}#aroused"] = {"id": "old-aroused"}
+    assert bank.prune(c.used_voice_keys()) == ["old-aroused"]
+    assert f"{key}#aroused2" in c.settings.vs_voice_bank
+
+
+def test_whisper_presets_are_picked_last():
+    ps = presets.defaults()
+    chars: dict = {}
+    for i in range(13):
+        chars[f"g{i}"] = voices.complete_character(f"g{i}", {"gender": "female"}, chars, ps)
+    whisper = {x["id"] for x in ps if x.get("style") == "whisper"}
+    assert not any(c["preset"] in whisper for c in chars.values())
+    nxt = voices.complete_character("g13", {"gender": "female"}, chars, ps)
+    assert nxt["preset"] in whisper                           # only when the rest are taken
+
+
+def test_characters_on_whisper_presets_get_moved_once():
+    d = Path(tempfile.mkdtemp())
+    c = Config(d / "settings.json")
+    c.settings.voices = {"G": {"Lewd": {"gender": "female", "preset": "f-yumi",
+                                        "voice_override": ""}}}
+    c.settings.whisper_fix = 0
+    c.save()
+    raw = json.loads((d / "settings.json").read_text(encoding="utf-8"))
+    raw.pop("whisper_fix")                                     # like an older settings file
+    (d / "settings.json").write_text(json.dumps(raw), encoding="utf-8")
+    c = Config(d / "settings.json")
+    assert c.characters("G")["Lewd"]["preset"] not in ("f-yumi", "f-raven")
+    c.update_character("G", "Lewd", preset="f-yumi")           # the user picks Yumi again
+    assert Config(d / "settings.json").characters("G")["Lewd"]["preset"] == "f-yumi"
+
+
+# ---------------------------------------------------------------- UI extras
+def _qt():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+def test_history_shows_the_mood():
+    app = _qt()
+    from app.ui.history_view import HistoryView
+    h = HistoryView()
+    h.install_toolbar(type("H", (), {"add": lambda self, *a: None})())
+    h.add("Natasha", "*Seductively* Hi.", "seductive")
+    h.add("Ryan", "Hello.")
+    assert h.table.columnCount() == 4
+    assert h.table.item(0, 3).text() == "seductive" and h.table.item(1, 3).text() == ""
+    assert h._text(0).endswith("(seductive)")
+    h._filter("seductive")
+    assert not h.table.isRowHidden(0) and h.table.isRowHidden(1)
+    assert app
+
+
+def test_cast_card_moods_button():
+    app = _qt()
+    from app.ui.characters_view import CharacterCard
+    ps = presets.by_id(presets.defaults())
+    rec = {"gender": "female", "preset": "f-natasha", "voice_override": "", "lines": 1}
+    card = CharacterCard("Natasha", rec, [("♀  Natasha", "preset:f-natasha")])
+    card.update_rec(rec, voices.effective(rec, ps))
+    got = []
+    card.preview_moods.connect(got.append)
+    card.btn_moods.click()
+    assert got == ["Natasha"]
+    card.update_rec(dict(rec, voice_override="sapi:Zira"), {})
+    assert not card.btn_moods.isEnabled()
+    assert app
+
+
+def test_mood_demo_lines_cover_every_variant():
+    from app.ui.main_window import MainWindow
+    moods = [m for _p, m in MainWindow.MOOD_DEMO]
+    assert set(moods) - {"normal"} == set(MOOD_SCRIPTS)
+    for prefix, mood in MainWindow.MOOD_DEMO[1:]:
+        d = emotion.parse(prefix + MainWindow.MOOD_SAMPLE)
+        assert d.variant == mood, (prefix, d.variant)
