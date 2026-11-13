@@ -6,6 +6,7 @@ A character record (stored in settings.voices[game][name]):
       "gender_auto": True,            # False once the user picked it
       "preset": "f-sunny",            # preset id, or "" for a custom design
       "accent": "",                   # character accent override ("" = preset's / global)
+      "age_override": "",             # character age override ("" = the voice's own age)
       "age", "pitch", "style", "vibe", "seed" # the custom design (used when preset == "")
       "voice_override": "",           # "vs:<profile id>" or "sapi:<voice>" chosen by the user
     }
@@ -21,6 +22,8 @@ from .config import NARRATOR
 
 GENDERS = ["female", "male", "unknown"]
 AGES = ["child", "teenager", "young adult", "middle-aged", "elderly"]
+# The ages that can be picked (adult content: every voice has seductive variants).
+ADULT_AGES = ["young adult", "middle-aged", "elderly"]
 PITCHES = ["very low pitch", "low pitch", "moderate pitch", "high pitch", "very high pitch"]
 ACCENTS = ["american accent", "british accent", "australian accent", "canadian accent",
            "indian accent", "japanese accent", "korean accent", "chinese accent",
@@ -149,6 +152,8 @@ def effective(rec: dict, presets: dict[str, dict], accent_override: str = "",
     }
     if rec.get("accent") and p:            # per-character accent on top of a preset
         d["accent"] = rec["accent"]
+    if rec.get("age_override"):            # per-character age, preset or custom
+        d["age"] = rec["age_override"]
     if accent_override:                    # global accent for every voice
         d["accent"] = accent_override
     if d["accent"] in ("", "Auto"):

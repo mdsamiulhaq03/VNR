@@ -190,8 +190,9 @@ Read a screenshot instead of the live game: **drop an image** onto the tab, or t
 
 The list on the left shows every character (search at the top); the editor on the right edits the selected one:
 - **♀ / ♂ / ?**: the gender is guessed from the name (English and Japanese names, plus titles like *Mr.*, *Ms.*, *Onee-chan*, *-kun*). If a guess is wrong, click to fix it and the character gets a voice of the right gender.
-- **Voice**: any **preset**, a **custom voice** (choose age, pitch and style yourself), one of **your own VoiceStudio voices**, or a **Windows voice**.
+- **Voice**: any **preset**, a **custom voice** (choose pitch and style yourself), one of **your own VoiceStudio voices**, or a **Windows voice**.
 - **Accent**: change this character's accent only.
+- **Age**: make this character sound younger or older (young adult, middle-aged or elderly), with any preset or custom voice. VoiceStudio makes the new voice on the next line (a few seconds, once).
 - **✨** (sparkles): switch to the next free preset. **Preview**: hear the voice.
 - **⋯**: **rename**, merge or delete.
 

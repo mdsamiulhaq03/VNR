@@ -123,8 +123,8 @@ def _migrate(data: dict) -> dict:
     return data
 
 
-_VOICE_FIELDS = {"preset", "accent", "age", "pitch", "style", "vibe", "seed", "gender",
-                 "gender_auto", "voice_override", "legacy", "vs_profile_id"}
+_VOICE_FIELDS = {"preset", "accent", "age", "age_override", "pitch", "style", "vibe", "seed",
+                 "gender", "gender_auto", "voice_override", "legacy", "vs_profile_id"}
 
 
 def _replace_presets(s: "Settings") -> None:

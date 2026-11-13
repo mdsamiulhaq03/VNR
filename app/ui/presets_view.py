@@ -34,6 +34,9 @@ def combo(items: list[str], current: str, first: tuple[str, str] | None = None) 
     for it in items:
         c.addItem(nice(it), it)
     i = c.findData(current)
+    if i < 0 and current:                  # an old value not offered any more: still shown
+        c.addItem(nice(current), current)
+        i = c.count() - 1
     c.setCurrentIndex(max(0, i))
     return c
 
@@ -247,7 +250,7 @@ class PresetCard(QWidget):
         form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         g_lay, self.gbtn = gender_toggle(self, on_click=lambda g: self._emit({"gender": g}))
         form.addRow(form_label("Gender"), g_lay)
-        self.cb_age = combo(voices.AGES, p.get("age", ""))
+        self.cb_age = combo(voices.ADULT_AGES, p.get("age", ""))
         self.cb_pitch = combo(voices.PITCHES, p.get("pitch", ""))
         self.cb_accent = combo(voices.ACCENTS, p.get("accent", ""), ("Any accent", ""))
         self.cb_style = combo(["whisper"], p.get("style", ""), ("Normal", ""))

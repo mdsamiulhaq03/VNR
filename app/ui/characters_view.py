@@ -86,6 +86,14 @@ class CharacterCard(QWidget):
         self.cb_accent.currentIndexChanged.connect(
             lambda _=0: self._field("accent", self.cb_accent.currentData()))
         form.addRow(form_label("Accent"), self.cb_accent)
+        self.cb_age = combo(voices.ADULT_AGES, rec.get("age_override", ""),
+                            ("Voice's own age", ""))
+        self.cb_age.setMaximumWidth(420)
+        self.cb_age.setToolTip("Make this character sound younger or older (VoiceStudio "
+                               "makes the new voice on the next line, a few seconds once)")
+        self.cb_age.currentIndexChanged.connect(
+            lambda _=0: self._field("age_override", self.cb_age.currentData()))
+        form.addRow(form_label("Age"), self.cb_age)
         lay.addLayout(form)
 
         self.custom_row = QWidget()
@@ -97,10 +105,9 @@ class CharacterCard(QWidget):
         cf = QFormLayout()
         cf.setHorizontalSpacing(16)
         cf.setVerticalSpacing(10)
-        self.cb_age = combo(voices.AGES, rec.get("age", "young adult"))
         self.cb_pitch = combo(voices.PITCHES, rec.get("pitch", "moderate pitch"))
         self.cb_style = combo(["whisper"], rec.get("style", ""), ("Normal", ""))
-        for cb, key, text in ((self.cb_age, "age", "Age"), (self.cb_pitch, "pitch", "Pitch"),
+        for cb, key, text in ((self.cb_pitch, "pitch", "Pitch"),
                               (self.cb_style, "style", "Style")):
             cb.setMaximumWidth(420)
             cb.currentIndexChanged.connect(lambda _=0, c=cb, k=key: self._field(k, c.currentData()))
@@ -143,7 +150,7 @@ class CharacterCard(QWidget):
         i = self.cb_voice.findData(voice_value(rec))
         if i >= 0:
             self.cb_voice.setCurrentIndex(i)
-        for cb, key in ((self.cb_accent, "accent"), (self.cb_age, "age"),
+        for cb, key in ((self.cb_accent, "accent"), (self.cb_age, "age_override"),
                         (self.cb_pitch, "pitch"), (self.cb_style, "style")):
             j = cb.findData(rec.get(key, ""))
             if j >= 0:
@@ -152,6 +159,10 @@ class CharacterCard(QWidget):
         custom = not override and not rec.get("preset")
         self.custom_row.setVisible(custom)
         self.cb_accent.setEnabled(not override)
+        self.cb_age.setEnabled(not override)
+        # Without an override the design's age *is* the voice's own age: show it.
+        own = "" if rec.get("age_override") else (design or {}).get("age", "")
+        self.cb_age.setItemText(0, f"Voice's own age ({own})" if own else "Voice's own age")
         self.cb_accent.setItemText(0, "Custom accent: none" if custom else "Voice's own accent")
         auto = (" (guessed)" if rec.get("gender_auto") and g != "unknown"
                 and self.name != NARRATOR else "")

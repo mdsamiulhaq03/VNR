@@ -137,3 +137,39 @@ def test_all_sentences_use_the_same_clone():
     q.shutdown()
     assert bank.made == 1
     assert [v for v, _ in vs.calls] == ["clone1"] * 3      # never the drifting raw design
+
+
+# ------------------------------------------------------------ per-character age
+def test_age_override_on_preset_and_custom():
+    ps = presets.by_id(presets.defaults())
+    base = voices.effective({"preset": "f-natasha"}, ps)
+    older = voices.effective({"preset": "f-natasha", "age_override": "middle-aged"}, ps)
+    assert base["age"] == "young adult" and older["age"] == "middle-aged"
+    assert voices.voice_key(base) != voices.voice_key(older)
+    custom = {"preset": "", "gender": "female", "age": "young adult", "seed": 5,
+              "age_override": "elderly"}
+    assert voices.effective(custom, ps)["age"] == "elderly"
+    assert "child" not in voices.ADULT_AGES and "teenager" not in voices.ADULT_AGES
+
+
+def test_cast_card_has_an_age_choice():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from app.ui.characters_view import CharacterCard
+    app = QApplication.instance() or QApplication([])
+    ps = presets.by_id(presets.defaults())
+    rec = {"gender": "female", "preset": "f-natasha", "voice_override": "", "lines": 1}
+    card = CharacterCard("Natasha", rec, [("♀  Natasha", "preset:f-natasha")])
+    card.update_rec(rec, voices.effective(rec, ps))
+    items = [card.cb_age.itemData(i) for i in range(card.cb_age.count())]
+    assert items == ["", "young adult", "middle-aged", "elderly"]
+    assert card.cb_age.itemText(0) == "Voice's own age (young adult)"
+    assert card.cb_age.isEnabled()
+    got = []
+    card.changed.connect(lambda name, ch: got.append((name, ch)))
+    card.cb_age.setCurrentIndex(2)
+    assert got == [("Natasha", {"age_override": "middle-aged"})]
+    card.update_rec(dict(rec, voice_override="sapi:Zira"), {})
+    assert not card.cb_age.isEnabled()                 # a fixed voice has no age to set
+    assert app
