@@ -26,6 +26,14 @@ def selftest(out_path: str) -> int:
         ImageDraw.Draw(img).text((15, 25), "Self test line for VN Reader.", fill="white",
                                  font=font)
         lines.append("ocr: " + WindowsOcr("en-US").read(img))
+        from PySide6.QtWidgets import QApplication
+        _app = QApplication.instance() or QApplication([])
+        from app.ui import theme
+        fonts_ok = theme.load_fonts()
+        import os
+        icons = [f for f in os.listdir(theme.asset_dir("icons")) if f.endswith(".svg")]
+        lines.append(f"ui: fonts={theme.SANS}/{theme.MONO} ({'bundled' if fonts_ok else 'fallback'})"
+                     f", icons={len(icons)}, play icon ok={not theme.pixmap('play').isNull()}")
 
         from app.name_split import split_name
         from app.voices import guess_gender
@@ -35,6 +43,29 @@ def selftest(out_path: str) -> int:
         d.text((15, 70), "Hey, wait up for me!", fill="white", font=font)
         who, what = split_name(WindowsOcr("en-US").read_lines(img2), [], "auto")
         lines.append(f"name split: {who!r} / {what!r} / gender={guess_gender(who)}")
+        from app.sources.ocr_source import OcrOptions
+        box = Image.new("RGB", (320, 66), (30, 25, 45))
+        d = ImageDraw.Draw(box)
+        d.rounded_rectangle((10, 8, 300, 58), 12, fill=(230, 120, 170))
+        d.text((30, 14), "Rin", fill="white", font=font)
+        lines.append("name area: " + repr(WindowsOcr("en-US").read_name(box, OcrOptions())))
+        from app.sources.ocr_source import make_ocr
+        po = make_ocr(OcrOptions(engine="paddle"))
+        lines.append(f"paddleocr ({type(po).__name__}): " + repr(po.read(img) if hasattr(
+            po, "read") else " ".join(po.read_dialogue(img, OcrOptions()).lines)) +
+            " / name " + repr(po.read_name(box, OcrOptions())))
+        from app.sources import paddle_ocr
+        from app.sources.screenshot_reader import find_dialogue
+        lines.append(f"gpu ocr available: {paddle_ocr.gpu_available()}")
+        shot = Image.new("RGB", (1280, 720), (60, 70, 90))
+        d = ImageDraw.Draw(shot)
+        d.text((20, 15), "Save  Load  Auto  Skip", fill="white", font=font)
+        d.rectangle((60, 520, 1220, 700), fill=(20, 20, 40))
+        d.text((80, 470), "Kaelith", fill=(255, 150, 200), font=font)
+        d.text((90, 560), "Welcome to Eldoria, traveller.", fill="white", font=font)
+        o = OcrOptions(engine="paddle")
+        r = find_dialogue(shot, make_ocr(o), make_ocr(o, limit=1920, gpu=True), o)
+        lines.append(f"screenshot: name={r.info.get('name')!r} text={' '.join(r.lines)!r}")
 
         from app.presets import defaults
         from app.sources.ocr_filter import correct, filter_lines

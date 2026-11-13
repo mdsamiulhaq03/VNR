@@ -6,7 +6,7 @@ A character record (stored in settings.voices[game][name]):
       "gender_auto": True,            # False once the user picked it
       "preset": "f-sunny",            # preset id, or "" for a custom design
       "accent": "",                   # character accent override ("" = preset's / global)
-      "age", "pitch", "style", "seed" # the custom design (used when preset == "")
+      "age", "pitch", "style", "vibe", "seed" # the custom design (used when preset == "")
       "voice_override": "",           # "vs:<profile id>" or "sapi:<voice>" chosen by the user
     }
 The *effective design* merges preset, character and global accent settings; its
@@ -35,6 +35,7 @@ _PITCH_CYCLE = {
              "moderate pitch"],
     "unknown": ["moderate pitch", "high pitch", "low pitch"],
 }
+_FEMALE_VIBES = ["sultry", "flirty", "sweet"]
 _ACCENT_CYCLE = ["american accent", "british accent", "american accent", "australian accent",
                  "canadian accent", "british accent"]
 
@@ -142,6 +143,7 @@ def effective(rec: dict, presets: dict[str, dict], accent_override: str = "",
         "pitch": base.get("pitch") or "moderate pitch",
         "accent": base.get("accent") or "",
         "style": base.get("style") or "",
+        "vibe": base.get("vibe") or "",
         "seed": int(base.get("seed") or 42),
         "label": p["name"] if p else (name or "custom"),
     }
@@ -167,8 +169,10 @@ def instruct(design: dict) -> str:
 
 
 def voice_key(design: dict) -> str:
-    """Identifies one voice: same key -> same VoiceStudio clone."""
-    return f"{instruct(design)}|{design.get('seed')}"
+    """Identifies one voice: same key -> same VoiceStudio clone. The vibe is part of it
+    (it changes the reference clip), but only when set, so older keys stay valid."""
+    key = f"{instruct(design)}|{design.get('seed')}"
+    return f"{key}|{design['vibe']}" if design.get("vibe") else key
 
 
 def fresh_seed(used: set) -> int:
@@ -193,6 +197,7 @@ def custom_design(name: str, gender: str, others: dict[str, dict]) -> dict:
         "pitch": pitches[n % len(pitches)],
         "accent": _ACCENT_CYCLE[(n // len(pitches) + n) % len(_ACCENT_CYCLE)],
         "style": "",
+        "vibe": _FEMALE_VIBES[n % len(_FEMALE_VIBES)] if gender == "female" else "",
         "seed": fresh_seed(used),
     }
 

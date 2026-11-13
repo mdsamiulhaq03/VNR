@@ -5,6 +5,8 @@
 - The first sentence starts playing while later ones are still being synthesized.
 - A newer line always wins: it cuts off playback and stops waiting on older work.
 - If VoiceStudio fails, a Windows voice of the same gender is used.
+- *Stage directions* are never spoken; the mood they describe picks an emotional variant
+  of the voice, a speed and expression tags (app/emotion.py).
 """
 from __future__ import annotations
 
@@ -45,7 +47,13 @@ class SpeechQueue:
         self.bank = bank
         self.expression_tags: set[str] = set()       # filled from VoiceStudio at startup
         self.expressive: Callable[[], bool] = lambda: True
+        self.emotion_voices: Callable[[], bool] = lambda: True   # emotional clone variants
+        self.vocalize: Callable[[], bool] = lambda: True         # *moans* -> "Mmmh…"
         self.on_done: Callable[[Line], None] = lambda line: None   # line fully played
+        # Steps for a line's FIRST sentence (e.g. 8 = fast) so the voice starts sooner;
+        # None = same quality as the rest.
+        self.quick_steps: Callable[[], int | None] = lambda: None
+        self._inflight: dict[tuple, threading.Event] = {}
         self.speed_getter = speed_getter
         self.on_status = on_status
         self._cache: OrderedDict[tuple, bytes] = OrderedDict()
@@ -123,7 +131,11 @@ class SpeechQueue:
                     return
                 line, gen, self._pending = self._pending, self._gen, None
             self.last = line
-            speed = self.speed_getter()
+            d = self.direct(line)
+            if not d.spoken:                 # only stage directions: nothing to say
+                self._wait_played(line, gen)
+                continue
+            speed = self.speed_getter() * d.speed
             override = (line.char or {}).get("voice_override") or ""
 
             profile_id = ""
@@ -140,15 +152,17 @@ class SpeechQueue:
                     if not profile_id and self.bank.enabled() and r is not None:
                         self.on_status("Couldn't prepare a stable voice: using the designed "
                                        "voice (it may vary between sentences)")
-            plan = self.attempts(line, profile_id)
+            plan = self.attempts(line, self._variant(line, d, profile_id))
 
             finished = True
-            for sentence in split_sentences(line.text):
+            quick = self.quick_steps()
+            for i, sentence in enumerate(split_sentences(d.spoken)):
                 if gen != self._gen:
                     finished = False
                     break
-                audio = self._abandonable(lambda s=sentence: self._synth_any(plan, s, speed),
-                                          gen)
+                steps = quick if i == 0 else None
+                audio = self._abandonable(
+                    lambda s=sentence, st=steps: self._synth_any(plan, s, speed, st), gen)
                 if audio is _ABANDONED or audio is None:
                     finished = audio is None          # a failed line still counts as done
                     break
@@ -163,6 +177,21 @@ class SpeechQueue:
                         break
             if finished:
                 self._wait_played(line, gen)
+
+    # ---- emotion ----
+    def direct(self, line: Line) -> emotion.Directed:
+        """The line with stage directions removed, and the mood to perform it in."""
+        act = self.expressive()
+        return emotion.parse(line.text, act=act, vocalize=self.vocalize(),
+                             tags=self.expression_tags if act else None)
+
+    def _variant(self, line: Line, d: emotion.Directed, profile_id: str) -> str:
+        """The emotional clone for this mood if it's ready, else the normal clone (the
+        variant is then made in the background for next time)."""
+        if not (profile_id and d.variant and line.design and self.bank is not None
+                and self.emotion_voices() and hasattr(self.bank, "variant")):
+            return profile_id
+        return self.bank.variant(line.design, d.variant) or profile_id
 
     def _wait_played(self, line: Line, gen: int) -> None:
         """Tell on_done once the line has fully played (used for auto-advance)."""
@@ -202,15 +231,60 @@ class SpeechQueue:
             return _ABANDONED
         return box.get("r")
 
-    def _synth_any(self, plan: list[Attempt], text: str, speed: float) -> bytes | None:
+    # ---- prefetch ----
+    def prefetch(self, line: Line) -> None:
+        """Start making the first sentence of a line that is probably coming (the OCR is
+        still confirming it). Nothing is played; say() later finds the audio ready, or
+        waits for this request instead of sending a second one."""
+        if self.primary is None or not self.primary.available():
+            return
+        override = (line.char or {}).get("voice_override") or ""
+        if override.startswith(SAPI_PREFIX):
+            return                                   # Windows voices are instant anyway
+        d = self.direct(line)
+        profile_id = ""
+        if self.bank is not None and line.design and not override:
+            profile_id = self.bank.cached(line.design)
+            if not profile_id and self.bank.enabled():
+                return                               # its voice isn't made yet
+        profile_id = self._variant(line, d, profile_id)
+        attempt = next((a for a in self.attempts(line, profile_id) if a[0] is self.primary),
+                       None)
+        sentences = split_sentences(d.spoken) if d.spoken else []
+        if attempt is None or not sentences:
+            return
+        engine, voice, opts = attempt
+        say, o = self._prepared(engine, opts, sentences[0], self.quick_steps())
+        speed = self.speed_getter() * d.speed
+
+        def job():
+            try:
+                self._synth(engine, voice, o, say, speed)
+            except Exception:
+                pass                                 # say() will retry and report
+        threading.Thread(target=job, name="prefetch", daemon=True).start()
+
+    def _prepared(self, engine: TTSEngine, opts: dict, text: str,
+                  steps: int | None) -> tuple[str, dict]:
+        """Text and options exactly as sent to the engine (so prefetch and say() match)."""
+        say = text
+        if engine is self.primary:
+            if self.expression_tags and self.expressive():
+                say = emotion.add_tags(text, self.expression_tags)
+            if steps:
+                opts = {**opts, "steps": steps}
+        else:
+            say = emotion.strip_tags(text)           # a Windows voice would read "[sigh]"
+        return say, opts
+
+    def _synth_any(self, plan: list[Attempt], text: str, speed: float,
+                   steps: int | None = None) -> bytes | None:
         last_err = None
         for i, (engine, voice, opts) in enumerate(plan):
             if engine is self.primary and not engine.available():
                 last_err = "VoiceStudio is offline"
                 continue
-            say = text
-            if engine is self.primary and self.expression_tags and self.expressive():
-                say = emotion.add_tags(text, self.expression_tags)
+            say, opts = self._prepared(engine, opts, text, steps)
             try:
                 audio = self._synth(engine, voice, opts, say, speed)
                 if i > 0 and engine is self.fallback and engine is not plan[0][0]:
@@ -224,13 +298,27 @@ class SpeechQueue:
     def _synth(self, engine: TTSEngine, voice: str, opts: dict, text: str,
                speed: float) -> bytes:
         key = (engine.name, voice, tuple(sorted(opts.items())), round(speed, 2), text)
-        with self._cache_lock:
-            if key in self._cache:
-                self._cache.move_to_end(key)
-                return self._cache[key]
-        audio = engine.synth(text, voice, speed, **opts)
-        with self._cache_lock:
-            self._cache[key] = audio
-            if len(self._cache) > self._cache_size:
-                self._cache.popitem(last=False)
-        return audio
+        while True:
+            with self._cache_lock:
+                if key in self._cache:
+                    self._cache.move_to_end(key)
+                    return self._cache[key]
+                busy = self._inflight.get(key)
+                if busy is None:                 # nobody is making it: we do
+                    busy = self._inflight[key] = threading.Event()
+                    break
+            busy.wait(120)                       # same request already running: wait
+            with self._cache_lock:
+                if key not in self._cache and self._inflight.get(key) is busy:
+                    self._inflight.pop(key, None)    # it hung: make it ourselves
+        try:
+            audio = engine.synth(text, voice, speed, **opts)
+            with self._cache_lock:
+                self._cache[key] = audio
+                if len(self._cache) > self._cache_size:
+                    self._cache.popitem(last=False)
+            return audio
+        finally:
+            with self._cache_lock:
+                self._inflight.pop(key, None)
+            busy.set()

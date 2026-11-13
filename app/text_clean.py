@@ -9,7 +9,8 @@ _ELLIPSIS = re.compile(r"(?:\.{2,}|…+)")
 _DASHES = re.compile(r"[-–—]{2,}")
 _SPACE = re.compile(r"\s+")
 _SPEAKABLE = re.compile(r"\w", re.UNICODE)
-_HEARTS = re.compile(r"[♥♡❤❣💕💖💗💓💞💘♪♫☆★]")
+# Hearts are kept: they mark a flirty line and app/emotion.py removes them before speaking.
+_HEARTS = re.compile(r"[♪♫☆★]")
 _LONG_RUN = re.compile(r"([A-Za-z])\1{3,}")
 
 
@@ -22,7 +23,7 @@ def clean(text: str) -> str:
     text = _ELLIPSIS.sub("…", text)
     text = _DASHES.sub("—", text)
     text = text.replace("　", " ")
-    text = _HEARTS.sub("", text)                    # ♥ ♡ ❤ and friends aren't spoken
+    text = _HEARTS.sub("", text)                    # ♪ ☆ aren't spoken
     text = _LONG_RUN.sub(r"\1\1\1", text)           # "Ahhhhhhhh" -> "Ahhh" (voice-friendly)
     text = re.sub(r"([!?])\1{2,}", r"\1\1", text)   # "!!!!" -> "!!"
     text = _SPACE.sub(" ", text).strip()

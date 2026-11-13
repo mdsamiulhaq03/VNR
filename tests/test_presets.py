@@ -8,41 +8,51 @@ from app import presets, voices
 from app.config import NARRATOR, Config
 from app.speech_queue import Line, SpeechQueue
 from app.tts.base import TTSEngine
+from app.voice_bank import VIBE_SCRIPTS
 
 
-def test_default_presets_3_male_8_female():
+def test_default_presets_4_male_15_female_adults():
     ps = presets.defaults()
-    assert sum(p["gender"] == "male" for p in ps) == 3
-    assert sum(p["gender"] == "female" for p in ps) == 8
-    assert len({p["id"] for p in ps}) == 11
+    assert sum(p["gender"] == "male" for p in ps) == 4
+    assert sum(p["gender"] == "female" for p in ps) == 15
+    assert len({p["id"] for p in ps}) == 19 and len({p["seed"] for p in ps}) == 19
     for p in ps:
+        assert p["age"] in ("young adult", "middle-aged")          # adults only
+        assert (p.get("vibe") or "") in ("",) + tuple(VIBE_SCRIPTS)
         assert voices.instruct(voices.effective({"preset": p["id"]}, presets.by_id(ps)))
 
 
-def test_eight_girls_get_eight_presets_then_custom():
+def test_girls_get_every_preset_then_custom():
     ps = presets.defaults()
     chars: dict = {}
-    for i in range(9):
+    for i in range(16):
         chars[f"g{i}"] = voices.complete_character(f"g{i}", {"gender": "female"}, chars, ps)
     used = [c["preset"] for c in chars.values()]
-    assert len(set(used[:8])) == 8 and all(used[:8])
-    assert used[8] == ""                                   # 9th girl: custom voice
-    assert chars["g8"]["gender"] == "female" and chars["g8"]["seed"]
+    assert len(set(used[:15])) == 15 and all(used[:15])
+    assert used[15] == ""                                  # 16th girl: custom voice
+    assert chars["g15"]["gender"] == "female" and chars["g15"]["seed"]
+    assert chars["g15"]["vibe"]                            # custom girls get a vibe too
     m = voices.complete_character("Kenji", {}, chars, ps)
     assert presets.by_id(ps)[m["preset"]]["gender"] == "male"
 
 
 def test_accent_precedence():
     ps = presets.by_id(presets.defaults())
-    rec = {"preset": "f-clara"}                            # british preset
+    rec = {"preset": "f-chloe"}                            # british preset
     assert voices.effective(rec, ps)["accent"] == "british accent"
     assert voices.effective(rec, ps, "australian accent")["accent"] == "australian accent"
     rec["accent"] = "indian accent"                        # character accent beats preset
     assert voices.effective(rec, ps)["accent"] == "indian accent"
     assert voices.effective(rec, ps, "korean accent")["accent"] == "korean accent"
-    whisper = voices.effective({"preset": "f-yuki"}, dict(ps, **{"f-yuki": dict(
-        ps["f-yuki"], style="whisper")}))
-    assert "whisper" in voices.instruct(whisper)
+    assert "whisper" in voices.instruct(voices.effective({"preset": "f-yumi"}, ps))
+
+
+def test_vibe_is_part_of_the_voice():
+    ps = presets.by_id(presets.defaults())
+    d = voices.effective({"preset": "f-natasha"}, ps)
+    assert d["vibe"] == "sultry" and voices.voice_key(d).endswith("|sultry")
+    plain = voices.effective({"preset": "m-ryan"}, ps)
+    assert voices.voice_key(plain).count("|") == 1         # no vibe: old key format
 
 
 def test_voice_key_changes_with_design():
@@ -120,7 +130,7 @@ class P:
 def test_all_sentences_use_the_same_clone():
     vs, bank, pl = RecVS(), Bank(), P()
     q = SpeechQueue(vs, None, pl, bank=bank)
-    design = voices.effective({"preset": "f-mia"}, presets.by_id(presets.defaults()))
+    design = voices.effective({"preset": "f-bella"}, presets.by_id(presets.defaults()))
     q.say(Line("g", "Mia", "Good morning to you. I made you a big breakfast. Please hurry up now.",
                {}, "en", design))
     assert pl.ev.wait(3)

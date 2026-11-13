@@ -76,8 +76,9 @@ def test_prune_only_orphans():
 # ---------------------------------------------------------------- emotions
 def test_emotion_tags():
     assert add_tags("Ahaha! So funny.", TAGS) == "[laughter] Ahaha! So funny."
-    assert add_tags("*laughs* You idiot.", TAGS) == "[laughter] You idiot."
-    assert add_tags("*sigh* Fine.", TAGS) == "[sigh] Fine."
+    from app.emotion import parse
+    assert parse("*laughs* You idiot.", tags=TAGS).spoken == "[laughter] You idiot."
+    assert parse("*sigh* Fine.", tags=TAGS).spoken == "[sigh] Fine."
     assert add_tags("Eh?! Really?", TAGS) == "[question-ei] Really?"
     assert add_tags("Ah! You scared me.", TAGS) == "[surprise-ah] You scared me."
     assert add_tags("Hmph. Whatever.", TAGS) == "[dissatisfaction-hnn] Whatever."

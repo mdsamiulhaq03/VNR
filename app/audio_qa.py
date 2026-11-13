@@ -61,8 +61,9 @@ def analyse(wav: bytes) -> dict:
 _F0_RANGE = {"male": (65, 210), "female": (140, 380), "unknown": (65, 380)}
 
 
-def reference_ok(wav: bytes, gender: str, age: str = "") -> tuple[bool, str]:
-    """Is this a clean, natural-sounding reference clip for that kind of voice?"""
+def reference_ok(wav: bytes, gender: str, age: str = "", slack: int = 0) -> tuple[bool, str]:
+    """Is this a clean, natural-sounding reference clip for that kind of voice?
+    slack: extra Hz allowed above the normal range (excited / angry takes)."""
     try:
         a = analyse(wav)
     except Exception as e:     # undecodable audio
@@ -70,6 +71,7 @@ def reference_ok(wav: bytes, gender: str, age: str = "") -> tuple[bool, str]:
     lo, hi = _F0_RANGE.get(gender, _F0_RANGE["unknown"])
     if age == "child":
         hi = 450
+    hi += slack
     if a["dur"] < 3:
         return False, f"too short ({a['dur']:.1f}s)"
     if a["voiced"] < 0.5:

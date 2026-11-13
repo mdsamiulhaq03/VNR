@@ -54,9 +54,21 @@ def separated_top(boxes: list[tuple] | None) -> bool | None:
     return bool(big_gap or x_off)
 
 
+def _caps_name(first: str, rest: list[str]) -> bool:
+    """A short ALL-CAPS top line over normal-case dialogue ("LUNA", "PRESENTER")."""
+    letters = [c for c in first if c.isalpha()]
+    if len(letters) < 2 or len(first.split()) > 3 or not all(c.isupper() for c in letters):
+        return False
+    body = "".join(rest)
+    return any(c.islower() for c in body)
+
+
 def split_name(lines: list[str], known: list[str], mode: str = "auto",
-               boxes: list[tuple] | None = None) -> tuple[str, str]:
-    """Returns (speaker, dialogue). speaker is '' for narration."""
+               boxes: list[tuple] | None = None,
+               styled: bool | None = None) -> tuple[str, str]:
+    """Returns (speaker, dialogue). speaker is '' for narration.
+
+    styled: the top line has another colour/size than the rest (see ocr_source)."""
     pairs = [(ln.strip(), boxes[i] if boxes and i < len(boxes) else None)
              for i, ln in enumerate(lines) if ln and ln.strip()]
     lines = [p[0] for p in pairs]
@@ -82,7 +94,9 @@ def split_name(lines: list[str], known: list[str], mode: str = "auto",
             if hit in known:
                 return hit, " ".join(rest)
         apart = separated_top(boxes)
-        if apart is True and looks_like_name(first, loose=True):
+        if (apart is True or styled is True) and looks_like_name(first, loose=True):
+            return first, " ".join(rest)
+        if _caps_name(first, rest) and looks_like_name(first, loose=True):
             return first, " ".join(rest)
         if apart is None and looks_like_name(first):     # no layout info: text rules only
             return first, " ".join(rest)

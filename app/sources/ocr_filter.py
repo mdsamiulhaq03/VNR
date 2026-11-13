@@ -54,6 +54,9 @@ class FilterResult:
     boxes: list[tuple] = field(default_factory=list)    # (height, top, left, width) per line
     dropped: list[tuple[str, str]] = field(default_factory=list)       # (line, reason)
     corrections: list[tuple[str, str]] = field(default_factory=list)   # (wrong, right)
+    # Is the top line styled differently from the rest (other colour / size)? A name
+    # line usually is. None = can't tell (one line, no boxes).
+    top_styled: bool | None = None
 
 
 def _norm(tok: str) -> str:
@@ -175,6 +178,8 @@ def _fix_word(w: str, known_lower: set[str], sentence_start: bool) -> str | None
         return None
     if _NO_VOWEL_SOUND.fullmatch(core):
         return None
+    if re.search(r"([a-z])\1\1", core):        # drawn out on purpose: "Sooooo", "nooo"
+        return None
     # Drawn-out sounds (haaah, ahhhn, hyaaan, nnnnh) are never typos.
     if _ELONGATED.search(core) and set(core) <= _SOUND_LETTERS:
         return None
@@ -204,9 +209,153 @@ def _fix_word(w: str, known_lower: set[str], sentence_start: bool) -> str | None
     return None
 
 
-def correct(text: str, known_names: list[str]) -> tuple[str, list[tuple[str, str]]]:
-    known_lower = {n.lower() for name in known_names for n in name.split()}
+# ------------------------------------------------------- safe repairs
+# Contractions OCR breaks on outlined / rounded game fonts (apostrophe read as t, r, 1…).
+CONTRACTIONS = {c.replace("'", ""): c for c in """
+I'm I'd I'll I've it's that's what's there's here's who's he's she's let's
+don't can't won't didn't isn't wasn't aren't weren't doesn't haven't hasn't hadn't
+couldn't wouldn't shouldn't mustn't ain't you're we're they're you've we've they've
+you'll we'll they'll he'll she'll it'll you'd we'd they'd he'd she'd
+""".split()}
+_IM = re.compile(r"(?<![\w'’])(?:rm|Im|l'm|1'm|I'rn|l'rn|Ilm|Vm|lm|I\s?t\s?m|I\s'm|I'\sm)"
+                 r"(?![\w'’])")
+_ID = re.compile(r"(?<![\w'’])(?:ltd|Itd|Ild|l'd|1'd|I\std|I\s'd)(?![\w'’.])")
+_ILL = re.compile(r"(?<![\w'’])(?:I'II|I'Il|I'lI|l'll|I\s?'II|I\s'll|lll)(?![\w'’])")
+_ILL_AMBIG = re.compile(r"(?<![\w'’])(?:Ill|II)(?=\s+[a-z])")      # "Ill be fine" / "II be"
+_IVE = re.compile(r"(?<![\w'’])(?:l've|I\s've|1've)(?![\w'’])")
+_11AM = re.compile(r"(?:^|(?<=[.!?…\"“]\s))11\s?am(?=\s+[a-z])", re.MULTILINE)
+_TIME_NEXT = re.compile(r"\s+(?:tomorrow|today|tonight|sharp|on|at|in|and|or|to|until|"
+                        r"meeting|class|train)\b")
+_AT_IN_WORD = re.compile(r"(?<=[A-Za-z])@|@(?=[A-Za-z])")
+_AT_ALONE = re.compile(r"(?<![\w@])@(?![\w@])")
+_SPLIT_CONTRACTION = re.compile(r"\b([A-Za-z]+)\s+['’]\s?(s|t|re|ve|ll|d|m)\b")
+_GLUED_APOS = re.compile(r"\b([A-Za-z]{2,})['’]([A-Za-z]{2,})\b")
+_APOS_LIKE = "tr1l5"
+
+
+def repair_ocr(text: str, known_names: list[str] | None = None,
+               game_words: list[str] | None = None) -> tuple[str, list[tuple[str, str]]]:
+    """Fix misreads OCR makes on game fonts, using only safe whole-token rules:
+    I'm/I'd/I'll/I've variants, an apostrophe read as a letter ("itrs" -> "it's"),
+    '@' for 'a' ("ye@h" -> "yeah"), a stray apostrophe between two words, a missing
+    space after a comma ("Hehe,you") and two words glued together ("reallythought").
+    Character names and this game's own words are never touched."""
+    known = {n.lower() for name in (known_names or []) for n in name.split()}
+    known |= {w.lower() for w in (game_words or [])}
     fixes: list[tuple[str, str]] = []
+
+    def sub(rx, repl, s):
+        def f(m):
+            new = repl(m) if callable(repl) else repl
+            if m.group(0).lower() in known:
+                return m.group(0)
+            if new != m.group(0):
+                fixes.append((m.group(0), new))
+            return new
+        return rx.sub(f, s)
+
+    t = sub(_AT_IN_WORD, "a", text)
+    t = sub(_AT_ALONE, "a", t)
+    t = sub(_IM, "I'm", t)
+    t = sub(_ID, "I'd", t)
+    t = sub(_ILL, "I'll", t)
+    t = sub(_ILL_AMBIG, "I'll", t)
+    t = sub(_IVE, "I've", t)
+
+    def eleven(m):
+        rest = t[m.end():]
+        return m.group(0) if _TIME_NEXT.match(rest) else "I'm"
+    t = sub(_11AM, eleven, t)
+
+    def split_c(m):
+        joined = (m.group(1) + m.group(2)).lower()
+        c = CONTRACTIONS.get(joined) or CONTRACTIONS.get(joined.capitalize())
+        if not c:
+            return m.group(0)
+        return m.group(1) + "'" + m.group(2)
+    t = sub(_SPLIT_CONTRACTION, split_c, t)
+
+    sp = _checker()
+
+    def glued(m):                     # "once'in" -> "once in"; "don't" stays
+        a, b = m.group(1), m.group(2)
+        word = (a + b).lower()
+        if word in CONTRACTIONS or (a + b) in CONTRACTIONS or b.lower() in (
+                "s", "t", "re", "ve", "ll", "d", "m"):
+            return m.group(0)
+        if sp.known([a.lower()]) and sp.known([b.lower()]):
+            return a + " " + b
+        return m.group(0)
+    t = sub(_GLUED_APOS, glued, t)
+
+    def apostrophe(m):                # "itrs" -> "it's", "dontt"? no: one swap only
+        w = m.group(0)
+        low = w.lower()
+        if low in known or sp.known([low]) or len(low) < 3:
+            return w
+        if low in CONTRACTIONS:                    # apostrophe simply lost: "dont"
+            c = CONTRACTIONS[low]
+            return c if c.startswith("I'") else _match_case(w, c)
+        for i in range(1, len(low) - 1):
+            if low[i] in _APOS_LIKE:
+                cand = low[:i] + low[i + 1:]
+                c = CONTRACTIONS.get(cand) or CONTRACTIONS.get(cand.capitalize())
+                if c:
+                    return _match_case(w, c) if not c.startswith("I'") else c
+        return w
+    t = sub(re.compile(r"(?<![\w'’])[A-Za-z0-9]{3,8}(?![\w'’])"), apostrophe, t)
+
+    # "Hehe,you" -> "Hehe, you" (numbers like 1,000 stay)
+    t = sub(re.compile(r"(?<=[A-Za-z])([,;])(?=[A-Za-z])"), lambda m: m.group(1) + " ", t)
+
+    def glued(m):                      # "reallythought" -> "really thought"
+        w = m.group(0)
+        low = w.lower()
+        if low in known or sp.known([low]) or _INTERJECTION.fullmatch(low) or \
+                (_ELONGATED.search(low) and set(low) <= _SOUND_LETTERS):
+            return w
+        best = None
+        for i in range(2, len(low) - 1):
+            a, b = low[:i], low[i:]
+            if (len(a) <= 2 and a not in _TWO) or (len(b) <= 2 and b not in _TWO):
+                continue
+            if sp.known([a]) and sp.known([b]):
+                score = min(len(a), len(b))
+                if best is None or score > best[0]:
+                    best = (score, w[:i], w[i:])
+        return f"{best[1]} {best[2]}" if best else w
+    t = sub(re.compile(r"(?<![\w'’])[a-z]{6,}(?![\w'’])"), glued, t)
+    return t, fixes
+
+
+# Short words that can be one half of a glued pair ("ofthe" -> "of the").
+_TWO = {"a", "i", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+        "me", "my", "no", "of", "oh", "ok", "on", "or", "so", "to", "up", "us", "we"}
+
+
+def unknown_words(text: str, known_names: list[str] | None = None) -> list[str]:
+    """Words the dictionary doesn't know (made-up names, places, slang): candidates for
+    this game's word memory. Sounds and interjections are left out."""
+    known = {n.lower() for name in (known_names or []) for n in name.split()}
+    out = []
+    for w in _WORD.findall(text):
+        w = w.strip("'’")
+        low = w.lower()
+        if len(low) < 3 or not low.isalpha() or low in known:
+            continue
+        if _INTERJECTION.fullmatch(low) or _NO_VOWEL_SOUND.fullmatch(low) or \
+                re.search(r"([a-z])\1\1", low):
+            continue
+        if not _checker().known([low]):
+            out.append(w)
+    return out
+
+
+def correct(text: str, known_names: list[str], game_words: list[str] | None = None
+            ) -> tuple[str, list[tuple[str, str]]]:
+    text, fixes = repair_ocr(text, known_names, game_words)
+    known_lower = {n.lower() for name in known_names for n in name.split()}
+    known_lower |= {w.lower() for w in (game_words or [])}
     out = []
     pos = 0
     sentence_start = True
@@ -216,7 +365,8 @@ def correct(text: str, known_names: list[str]) -> tuple[str, list[tuple[str, str
         between = text[pos:m.start()]
         if re.search(r"[.!?…]\s*$", between):
             sentence_start = True
-        new = _fix_word(w, known_lower, sentence_start)
+        cut_off = text[m.end():m.end() + 1] in ("-", "—", "–")   # "a lifet-" (interrupted)
+        new = None if cut_off else _fix_word(w, known_lower, sentence_start)
         if new and new != w:
             fixes.append((w, new))
             w = new

@@ -1,32 +1,20 @@
-"""Character cards: gender, voice (preset / custom / saved / Windows), accent."""
+"""Cast page: every character of this game, as a master–detail editor."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
-                               QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QFormLayout, QHBoxLayout, QLabel, QSizePolicy,
+                               QVBoxLayout, QWidget)
 
 from .. import voices
 from ..config import NARRATOR
 from . import theme
-from .presets_view import combo, gender_toggle, icon_button, shrinkable
+from .components import Avatar, button, icon_button, label, section
+from .presets_view import (ListRow, MasterDetail, combo, form_label, gender_toggle, nice,
+                           shrinkable)
 
 CUSTOM = "custom"
 
-
-class Avatar(QLabel):
-    def __init__(self, name: str, size: int = 40):
-        super().__init__()
-        self.setFixedSize(size, size)
-        self.setAlignment(Qt.AlignCenter)
-        self.set_name(name, size)
-
-    def set_name(self, name: str, size: int | None = None):
-        size = size or self.width()
-        initial = "N" if name == NARRATOR else (name.strip()[:1].upper() or "?")
-        self.setText(initial)
-        c = theme.avatar_color(name)
-        self.setStyleSheet(f"background:{c}; color:#14151a; border-radius:{size // 2}px;"
-                           f"font-size:{max(10, size // 2 - 4)}pt; font-weight:800;")
+__all__ = ["Avatar", "CharactersView", "CharacterCard", "CUSTOM", "voice_value"]
 
 
 def voice_value(rec: dict) -> str:
@@ -38,7 +26,8 @@ def voice_value(rec: dict) -> str:
     return CUSTOM
 
 
-class CharacterCard(QFrame):
+class CharacterCard(QWidget):
+    """The editor for one character (right side of the Cast page)."""
     changed = Signal(str, dict)          # name, field changes
     voice_chosen = Signal(str, str)      # name, combo value
     gender_changed = Signal(str, str)    # name, gender
@@ -48,71 +37,78 @@ class CharacterCard(QFrame):
 
     def __init__(self, name: str, rec: dict, sources: list[tuple[str, str]]):
         super().__init__()
-        self.setObjectName("card")
+        self.setObjectName("page")
         self.name = name
         self._loading = True
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(28, 22, 28, 22)
+        lay.setSpacing(16)
 
         top = QHBoxLayout()
-        self.avatar = Avatar(name)
+        top.setSpacing(12)
+        self.avatar = Avatar(name, 44)
         top.addWidget(self.avatar)
         info = QVBoxLayout()
-        info.setSpacing(0)
+        info.setSpacing(2)
         self.lbl_name = QLabel("Narrator" if name == NARRATOR else name)
-        self.lbl_name.setObjectName("speaker")
+        self.lbl_name.setStyleSheet("font-size: 14pt; font-weight: 600;")
         self.lbl_name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.lbl_sub = QLabel()
-        self.lbl_sub.setObjectName("muted")
-        self.lbl_sub.setWordWrap(True)
+        self.lbl_sub = label("", "mono", wrap=True)
         info.addWidget(self.lbl_name)
         info.addWidget(self.lbl_sub)
         top.addLayout(info, 1)
-        g_lay, self.gbtn = gender_toggle(self, ("female", "male", "unknown"),
-                                         lambda g: (not self._loading) and
-                                         self.gender_changed.emit(self.name, g))
-        top.addLayout(g_lay)
-        b_new = icon_button("🎲", "Give this character a different voice")
-        b_new.clicked.connect(lambda: self.reroll.emit(self.name))
-        b_play = icon_button("▶", "Preview this voice")
-        b_play.clicked.connect(lambda: self.preview.emit(self.name))
-        b_more = icon_button("⋯", "Merge or delete")
+        top.addWidget(button("Preview", "play", tip="Hear this character's voice",
+                             slot=lambda: self.preview.emit(self.name)))
+        top.addWidget(icon_button("sparkles", "Give this character a different voice",
+                                  lambda: self.reroll.emit(self.name)))
+        b_more = icon_button("ellipsis", "Rename, merge or delete")
         b_more.clicked.connect(lambda: self.menu.emit(
             self.name, b_more.mapToGlobal(b_more.rect().bottomLeft())))
-        top.addWidget(b_new)
-        top.addWidget(b_play)
         top.addWidget(b_more)
         lay.addLayout(top)
 
-        vrow = QHBoxLayout()
-        lbl = QLabel("Voice")
-        lbl.setObjectName("muted")
-        vrow.addWidget(lbl)
+        lay.addWidget(section("Voice"))
+        form = QFormLayout()
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
+        g_lay, self.gbtn = gender_toggle(self, ("female", "male", "unknown"),
+                                         lambda g: (not self._loading) and
+                                         self.gender_changed.emit(self.name, g))
+        form.addRow(form_label("Gender"), g_lay)
         self.cb_voice = shrinkable(QComboBox())
+        self.cb_voice.setMaximumWidth(420)
         self.cb_voice.currentIndexChanged.connect(
             lambda _=0: (not self._loading) and
             self.voice_chosen.emit(self.name, self.cb_voice.currentData() or CUSTOM))
-        vrow.addWidget(self.cb_voice, 2)
+        form.addRow(form_label("Voice"), self.cb_voice)
         self.cb_accent = combo(voices.ACCENTS, rec.get("accent", ""), ("Voice's own accent", ""))
-        self.cb_accent.setToolTip("Accent for this character")
+        self.cb_accent.setMaximumWidth(420)
         self.cb_accent.currentIndexChanged.connect(
             lambda _=0: self._field("accent", self.cb_accent.currentData()))
-        vrow.addWidget(self.cb_accent, 1)
-        lay.addLayout(vrow)
+        form.addRow(form_label("Accent"), self.cb_accent)
+        lay.addLayout(form)
 
         self.custom_row = QWidget()
-        cr = QHBoxLayout(self.custom_row)
-        cr.setContentsMargins(0, 0, 0, 0)
+        self.custom_row.setObjectName("transparent")
+        cl = QVBoxLayout(self.custom_row)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(10)
+        cl.addWidget(section("Custom voice"))
+        cf = QFormLayout()
+        cf.setHorizontalSpacing(16)
+        cf.setVerticalSpacing(10)
         self.cb_age = combo(voices.AGES, rec.get("age", "young adult"))
         self.cb_pitch = combo(voices.PITCHES, rec.get("pitch", "moderate pitch"))
         self.cb_style = combo(["whisper"], rec.get("style", ""), ("Normal", ""))
-        for cb, key, tip in ((self.cb_age, "age", "Age"), (self.cb_pitch, "pitch", "Pitch"),
-                             (self.cb_style, "style", "Style")):
-            cb.setToolTip(tip)
+        for cb, key, text in ((self.cb_age, "age", "Age"), (self.cb_pitch, "pitch", "Pitch"),
+                              (self.cb_style, "style", "Style")):
+            cb.setMaximumWidth(420)
             cb.currentIndexChanged.connect(lambda _=0, c=cb, k=key: self._field(k, c.currentData()))
-            cr.addWidget(cb)
+            cf.addRow(form_label(text), cb)
+        cl.addLayout(cf)
         lay.addWidget(self.custom_row)
+        lay.addWidget(label("Edits apply from this character's next line.", "faint"))
+        lay.addStretch(1)
         self.set_sources(sources, voice_value(rec))
         self._loading = False
         self.update_rec(rec, {})
@@ -125,13 +121,13 @@ class CharacterCard(QFrame):
         was = self._loading
         self._loading = True
         self.cb_voice.clear()
-        for label, value in sources:
+        for text, value in sources:
             if value is None:                       # section header
-                self.cb_voice.addItem(label, "")
+                self.cb_voice.addItem(text, "")
                 idx = self.cb_voice.count() - 1
                 self.cb_voice.model().item(idx).setEnabled(False)
             else:
-                self.cb_voice.addItem(label, value)
+                self.cb_voice.addItem(text, value)
         i = self.cb_voice.findData(current)
         if i < 0 and current:
             self.cb_voice.addItem(current, current)
@@ -143,6 +139,7 @@ class CharacterCard(QFrame):
         self._loading = True
         g = rec.get("gender", "unknown")
         self.gbtn.get(g, self.gbtn["unknown"]).setChecked(True)
+        self.avatar.set_name(self.name, 44, "" if self.name == NARRATOR else theme.gender_color(g))
         i = self.cb_voice.findData(voice_value(rec))
         if i >= 0:
             self.cb_voice.setCurrentIndex(i)
@@ -158,18 +155,19 @@ class CharacterCard(QFrame):
         self.cb_accent.setItemText(0, "Custom accent: none" if custom else "Voice's own accent")
         auto = (" (guessed)" if rec.get("gender_auto") and g != "unknown"
                 and self.name != NARRATOR else "")
-        gname = {"female": "Female", "male": "Male"}.get(g, "Gender unknown")
+        gname = {"female": "female", "male": "male"}.get(g, "gender unknown")
         if override.startswith("sapi:"):
             src = "Windows voice"
         elif override.startswith("vs:"):
             src = "your VoiceStudio voice"
         elif design:
             src = (f"preset {design.get('label')}" if rec.get("preset") else "custom voice")
-            src += f" · {voices.instruct(design)}"
+            src += f"  ·  {voices.instruct(design)}"
         else:
             src = ""
-        self.lbl_sub.setText(f"{gname}{auto} · {src}" if src else gname)
-        self.lbl_sub.setStyleSheet(f"color:{theme.gender_color(g)};" if g != "unknown" else "")
+        n = int(rec.get("lines", 0))
+        self.lbl_sub.setText(f"{gname}{auto}  ·  {n} line{'s' if n != 1 else ''}" +
+                             (f"\n{src}" if src else ""))
         self._loading = False
 
 
@@ -187,75 +185,63 @@ class CharactersView(QWidget):
         super().__init__()
         self.setObjectName("page")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        head = QHBoxLayout()
-        t = QLabel("Characters")
-        t.setObjectName("title")
-        head.addWidget(t)
-        head.addStretch(1)
-        b_ref = QPushButton("⟳ Refresh")
-        b_ref.setToolTip("Reload your VoiceStudio and Windows voices")
-        b_ref.clicked.connect(self.refresh.emit)
-        b_all = QPushButton("Re-assign presets")
-        b_all.setToolTip("Give every character a fresh preset of their gender")
-        b_all.clicked.connect(self.reassign_all.emit)
-        head.addWidget(b_ref)
-        head.addWidget(b_all)
-        lay.addLayout(head)
-        self.hint = QLabel("Characters appear here when they first speak, and are remembered "
-                           "for this game. Click ♀ / ♂ if the guess is wrong.")
-        self.hint.setObjectName("muted")
-        self.hint.setWordWrap(True)
-        lay.addWidget(self.hint)
-
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.inner = QWidget()
-        self.inner.setObjectName("page")
-        self.list = QVBoxLayout(self.inner)
-        self.list.setContentsMargins(0, 4, 4, 4)
-        self.list.setSpacing(8)
-        self.list.addStretch(1)
-        self.scroll.setWidget(self.inner)
-        lay.addWidget(self.scroll, 1)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.md = MasterDetail("Search characters", (
+            "users", "No character selected",
+            "Characters appear when they first speak and are remembered for this game."))
+        lay.addWidget(self.md)
         self.cards: dict[str, CharacterCard] = {}
         self.sources: list[tuple[str, str | None]] = []
+        self._recs: dict[str, dict] = {}
+
+    def install_toolbar(self, header):
+        header.add(button("Refresh voices", "refresh-cw", "ghost",
+                          "Reload your VoiceStudio and Windows voices", slot=self.refresh.emit),
+                   button("Re-assign presets", "sparkles", tip="Give every character a fresh "
+                          "preset of their gender", slot=self.reassign_all.emit))
 
     def set_sources(self, presets: list[dict], vs_profiles: list[dict], sapi_voices: list[str]):
-        src: list[tuple[str, str | None]] = [("── Female presets ──", None)]
+        src: list[tuple[str, str | None]] = [("Female presets", None)]
         src += [(f"♀  {p['name']}", "preset:" + p["id"]) for p in presets
                 if p.get("gender") == "female"]
-        src += [("── Male presets ──", None)]
+        src += [("Male presets", None)]
         src += [(f"♂  {p['name']}", "preset:" + p["id"]) for p in presets
                 if p.get("gender") == "male"]
-        src += [("── Other ──", None), ("✨  Custom voice (set age / pitch below)", CUSTOM)]
+        src += [("Other", None), ("Custom voice (set age / pitch below)", CUSTOM)]
         mine = [p for p in vs_profiles if not str(p.get("name", "")).startswith("VNR - ")]
         if mine:
-            src += [("── My VoiceStudio voices ──", None)]
-            src += [(f"🎙  {p['name']}", "vs:" + p["id"]) for p in mine]
+            src += [("My VoiceStudio voices", None)]
+            src += [(p["name"], "vs:" + p["id"]) for p in mine]
         if sapi_voices:
-            src += [("── Windows voices ──", None)]
-            src += [("🪟  " + v.split(":", 1)[1].replace("Microsoft ", "")
-                     .replace(" Desktop", ""), v) for v in sapi_voices]
+            src += [("Windows voices", None)]
+            src += [(v.split(":", 1)[1].replace("Microsoft ", "").replace(" Desktop", ""), v)
+                    for v in sapi_voices]
         self.sources = src
         for card in self.cards.values():
             card.set_sources(src, card.cb_voice.currentData() or CUSTOM)
 
-    def load(self, chars: dict[str, dict], designs: dict[str, dict]):
-        for card in self.cards.values():
-            card.setParent(None)
-            card.deleteLater()
-        self.cards.clear()
-        for name in sorted(chars, key=lambda n: n != NARRATOR):
-            self.ensure(name, chars[name], designs.get(name, {}))
+    def _row(self, name: str, rec: dict, design: dict) -> QWidget:
+        g = rec.get("gender", "unknown")
+        av = Avatar(name, 28)
+        av.set_name(name, 28, "" if name == NARRATOR else theme.gender_color(g))
+        ov = rec.get("voice_override", "")
+        voice = ("Windows voice" if ov.startswith("sapi:") else "VoiceStudio voice"
+                 if ov.startswith("vs:") else (design.get("label") if rec.get("preset")
+                                               else "custom voice") if design else "")
+        return ListRow("Narrator" if name == NARRATOR else name, voice or "",
+                       str(int(rec.get("lines", 0))), av)
 
-    def ensure(self, name: str, rec: dict, design: dict):
-        card = self.cards.get(name)
-        if card:
-            card.update_rec(rec, design)
-            return
+    def load(self, chars: dict[str, dict], designs: dict[str, dict]):
+        keep = self.md.current()
+        self.md.clear_all()
+        self.cards.clear()
+        for name in sorted(chars, key=lambda n: (n != NARRATOR,
+                                                 -int(chars[n].get("lines", 0)))):
+            self._add(name, chars[name], designs.get(name, {}))
+        if keep in self.cards:
+            self.md.select(keep)
+
+    def _add(self, name, rec, design):
         card = CharacterCard(name, rec, self.sources)
         card.update_rec(rec, design)
         card.changed.connect(self.changed.emit)
@@ -264,5 +250,16 @@ class CharactersView(QWidget):
         card.reroll.connect(self.reroll.emit)
         card.preview.connect(self.preview.emit)
         card.menu.connect(self.menu.emit)
-        self.list.insertWidget(self.list.count() - 1, card)
+        self.md.add(name, self._row(name, rec, design), card, name)
         self.cards[name] = card
+
+    def ensure(self, name: str, rec: dict, design: dict):
+        card = self.cards.get(name)
+        if card:
+            card.update_rec(rec, design)
+            self.md.set_row(name, self._row(name, rec, design))
+            return
+        self._add(name, rec, design)
+
+    def select(self, name: str):
+        self.md.select(name)

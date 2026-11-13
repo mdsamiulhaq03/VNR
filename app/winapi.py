@@ -139,6 +139,71 @@ def find_window(exe: str, title: str) -> WindowInfo | None:
     return None
 
 
+user32.WindowFromPoint.argtypes = [wt.POINT]
+user32.WindowFromPoint.restype = wt.HWND
+user32.GetAncestor.argtypes = [wt.HWND, ctypes.c_uint]
+user32.GetAncestor.restype = wt.HWND
+user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+GA_ROOT = 2
+_SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+
+
+def window_at(x: int, y: int) -> WindowInfo | None:
+    """The top-level app window under a screen point (physical px), e.g. the game under
+    a box the user just drew. None for the desktop, the taskbar or our own windows."""
+    hwnd = user32.WindowFromPoint(wt.POINT(int(x), int(y)))
+    if not hwnd:
+        return None
+    root = user32.GetAncestor(hwnd, GA_ROOT) or hwnd
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(root, buf, 256)
+    if buf.value in _SHELL_CLASSES:
+        return None
+    pid = _pid(root)
+    if pid == os.getpid():
+        return None
+    title = _title(root)
+    return WindowInfo(int(root), title or "(untitled window)", _exe(pid))
+
+
+def foreground_window() -> WindowInfo | None:
+    """The app window the user is looking at (e.g. the game after we minimized). None for
+    the desktop, the taskbar or our own windows."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd or user32.IsIconic(hwnd):
+        return None
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    if buf.value in _SHELL_CLASSES:
+        return None
+    pid = _pid(hwnd)
+    if pid == os.getpid():
+        return None
+    return WindowInfo(int(hwnd), _title(hwnd) or "(untitled window)", _exe(pid))
+
+
+def cursor_pos() -> tuple[int, int]:
+    p = wt.POINT()
+    user32.GetCursorPos(ctypes.byref(p))
+    return p.x, p.y
+
+
+def dark_title_bar(hwnd: int, caption: int = 0x000000, text: int = 0xEDEDED,
+                   border: int = 0x262626) -> None:
+    """Black native title bar (Windows 11: exact colours; Windows 10: dark mode only).
+    Colours are 0xRRGGBB; DWM wants 0x00BBGGRR."""
+    def bgr(c):
+        return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
+    for attr, val in ((20, 1), (19, 1), (35, bgr(caption)), (36, bgr(text)),
+                      (34, bgr(border))):
+        v = ctypes.c_int(val)
+        try:
+            dwmapi.DwmSetWindowAttribute(wt.HWND(hwnd), attr, ctypes.byref(v),
+                                         ctypes.sizeof(v))
+        except OSError:
+            pass
+
+
 def is_window(hwnd: int) -> bool:
     return bool(hwnd) and bool(user32.IsWindow(hwnd))
 
