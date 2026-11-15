@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QGraphicsOpacityEffect, QHBoxL
 
 from ..config import NARRATOR
 from . import theme
-from .components import Avatar, EmptyState, SearchField, fade_in, icon_button
+from .components import Avatar, EmptyState, IconLabel, SearchField, fade_in, icon_button
 from .settings_view import pil_to_pixmap
 
 
@@ -23,11 +23,13 @@ def character_menu(parent: QWidget, name: str, others: list[str], on_edit=None,
                    on_merge=None, on_delete=None, on_rename=None) -> QMenu:
     m = QMenu(parent)
     if on_edit:
-        m.addAction(theme.icon("mic", theme.TEXT_2), "Edit voice…", lambda: on_edit(name))
+        m.addAction(theme.icon("mic", "TEXT_2", active="ON_ACCENT"), "Edit voice…",
+                    lambda: on_edit(name))
     if name != NARRATOR and on_rename:
-        m.addAction(theme.icon("pencil", theme.TEXT_2), "Rename…", lambda: on_rename(name))
+        m.addAction(theme.icon("pencil", "TEXT_2", active="ON_ACCENT"), "Rename…",
+                    lambda: on_rename(name))
     if name != NARRATOR and on_merge:
-        sub = m.addMenu(theme.icon("merge", theme.TEXT_2), "Merge into")
+        sub = m.addMenu(theme.icon("merge", "TEXT_2", active="ON_ACCENT"), "Merge into")
         targets = [o for o in others if o not in (name, NARRATOR)]
         if not targets:
             sub.setEnabled(False)
@@ -37,7 +39,7 @@ def character_menu(parent: QWidget, name: str, others: list[str], on_edit=None,
             sub.addAction(a)
     if name != NARRATOR and on_delete:
         m.addSeparator()
-        m.addAction(theme.icon("trash-2", theme.DANGER), "Delete character…",
+        m.addAction(theme.icon("trash-2", "DANGER", active="ON_ACCENT"), "Delete character…",
                     lambda: on_delete(name))
     return m
 
@@ -62,9 +64,67 @@ class LevelMeter(QWidget):
         h = self.height()
         for i, v in enumerate(self.hist):
             bh = max(2.0, v * h)
-            c = QColor(theme.TEXT if v > 0.02 else theme.BORDER_HOVER)
+            c = QColor(theme.ACCENT if v > 0.02 else theme.BORDER_HOVER)
             p.setBrush(c)
             p.drawRoundedRect(QRectF(i * 5, (h - bh) / 2, 2, bh), 1, 1)
+
+
+# --------------------------------------------------------- now-playing bits
+class ProgressEdge(QWidget):
+    """A thin progress line (along the bottom edge of the now-playing card)."""
+
+    def __init__(self, height: int = 3):
+        super().__init__()
+        self.setFixedHeight(height)
+        self._v = 0.0
+
+    def set_value(self, v: float):
+        v = max(0.0, min(1.0, float(v)))
+        if abs(v - self._v) > 0.002:
+            self._v = v
+            self.update()
+
+    def value(self) -> float:
+        return self._v
+
+    def paintEvent(self, _e):
+        if self._v <= 0:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.ACCENT))
+        h = self.height()
+        p.drawRoundedRect(QRectF(0, 0, self.width() * self._v, h), h / 2, h / 2)
+
+
+def sentence_html(parts: list[str], current: int) -> str:
+    """The line with the sentence being spoken in full colour, the others dimmed."""
+    import html
+    out = []
+    for j, s in enumerate(parts):
+        col = theme.TEXT if j == current else theme.TEXT_3
+        out.append(f"<span style='color:{col}'>{html.escape(s)}</span>")
+    return " ".join(out)
+
+
+def match_sentence(spoken: str, parts: list[str]) -> int:
+    """Which shown sentence a spoken sentence is (the spoken text has stage directions
+    removed and may start with the name), by shared words. -1 = none."""
+    import re
+    words = lambda s: set(re.findall(r"\w+", s.lower()))       # noqa: E731
+    w = words(spoken)
+    if not w:
+        return -1
+    best, score = -1, 0.0
+    for j, s in enumerate(parts):
+        ws = words(s)
+        if not ws:
+            continue
+        sc = len(w & ws) / max(1, len(w))
+        if sc > score:
+            best, score = j, sc
+    return best if score >= 0.5 else -1
 
 
 # ------------------------------------------------------------ live preview
@@ -74,12 +134,10 @@ class AreaPreview(QLabel):
 
     def __init__(self):
         super().__init__("Start reading to see the live area")
-        self.setObjectName("faint")
+        self.setObjectName("areaPreview")
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(200, 100)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setStyleSheet(f"QLabel {{ background: {theme.BG}; border: 1px solid {theme.BORDER};"
-                           f" border-radius: {theme.RADIUS}px; color: {theme.TEXT_3}; }}")
         self._img: Image.Image | None = None
         self._boxes: list = []
         self._name_on_top = False
@@ -149,13 +207,7 @@ class Transcript(QListWidget):
     def __init__(self):
         super().__init__()
         self.setObjectName("transcriptList")
-        self.setStyleSheet(
-            f"QListWidget#transcriptList {{ background: {theme.BG}; border: none; "
-            f"padding: 0 18px; }} QListWidget#transcriptList::item {{ padding: 7px 10px; "
-            f"border-radius: 6px; color: {theme.TEXT_2}; }} "
-            f"QListWidget#transcriptList::item:hover {{ background: {theme.PANEL}; "
-            f"color: {theme.TEXT}; }} QListWidget#transcriptList::item:selected {{ "
-            f"background: {theme.ELEVATED}; color: {theme.TEXT}; }}")
+        self.setFrameShape(QFrame.NoFrame)
         self.setWordWrap(True)
         self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.setCursor(Qt.PointingHandCursor)
@@ -169,7 +221,7 @@ class Transcript(QListWidget):
             self.takeItem(self.row(self._empty))
             self._empty = None
         who = "Narrator" if speaker == NARRATOR else speaker
-        it = QListWidgetItem(f"{who}  —  {text}")
+        it = QListWidgetItem(f"{who}:  {text}")
         it.setData(Qt.UserRole, (speaker, text))
         it.setToolTip("Click to hear it again")
         self.insertItem(0, it)
@@ -186,28 +238,27 @@ class CastRow(QFrame):
         super().__init__()
         self.name = name
         self.setObjectName("castRow")
-        self.setStyleSheet(f"QFrame#castRow {{ border-radius: 6px; }} "
-                           f"QFrame#castRow:hover {{ background: {theme.PANEL}; }}")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 4, 2, 4)
-        lay.setSpacing(8)
-        g = rec.get("gender", "unknown")
-        av = Avatar(name, 26)
-        av.set_name(name, 26, ring="" if name == NARRATOR else theme.gender_color(g))
+        lay.setContentsMargins(6, 5, 2, 5)
+        lay.setSpacing(10)
+        av = Avatar(name, 30)
+        av.set_name(name, 30, ring="" if name == NARRATOR else theme.char_colour(rec))
         lay.addWidget(av)
         col = QVBoxLayout()
-        col.setSpacing(0)
+        col.setSpacing(1)
         nm = QLabel("Narrator" if name == NARRATOR else name)
+        nm.setObjectName("strong")
         nm.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         v = QLabel(voice_label)
-        v.setObjectName("mono")
+        v.setObjectName("footnote")
         v.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         col.addWidget(nm)
         col.addWidget(v)
         lay.addLayout(col, 1)
         cnt = int(rec.get("lines", 0))
         n = QLabel(str(cnt))
-        n.setObjectName("mono")
+        n.setObjectName("number")
         n.setToolTip(f"{cnt} line{'s' if cnt != 1 else ''}")
         lay.addWidget(n)
         lay.addWidget(icon_button("play", "Preview voice", lambda: self.preview.emit(self.name),
@@ -252,8 +303,7 @@ class CastList(QWidget):
         self.rows.setSpacing(1)
         self.rows.addStretch(1)
         self.scroll.setWidget(inner)
-        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget "
-                                  "{ background: transparent; }")
+        self.scroll.setObjectName("clear")
         lay.addWidget(self.scroll, 1)
         self._chars: dict = {}
         self._labels: dict = {}
@@ -266,6 +316,7 @@ class CastList(QWidget):
         while self.rows.count() > 1:
             w = self.rows.takeAt(0).widget()
             if w:
+                w.hide()                 # gone now, not when Qt gets round to deleting it
                 w.deleteLater()
         q = self.search.text().strip().lower()
         names = [n for n in self._chars if not q or q in n.lower()]
@@ -305,38 +356,42 @@ class StatsLabel(QLabel):
 
     def __init__(self):
         super().__init__()
-        self.setObjectName("mono")
+        self.setObjectName("footnote")
 
     def set_chips(self, chips: list[tuple[str, bool]]):
-        self.setText("  ·  ".join(t for t, live in chips if not live))
+        self.setText(",  ".join(t for t, live in chips if not live))
 
 
 # -------------------------------------------------------------------- toast
 class Toast(QFrame):
-    """A short message that slides up at the bottom-right of the window and fades."""
+    """A short message: a pill that rises in at the bottom centre of the window and
+    fades (above the player controls, so it never covers the line being read)."""
+
+    def target(self) -> QPoint:
+        p = self.parentWidget()
+        return QPoint(max(8, (p.width() - self.width()) // 2),
+                      p.height() - self.height() - 64)
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
         self.setObjectName("toastFrame")
-        self.setStyleSheet(f"QFrame#toastFrame {{ background: {theme.ELEVATED}; "
-                           f"border: 1px solid {theme.BORDER_HOVER}; border-radius: 10px; }}")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 10, 14, 10)
-        lay.setSpacing(10)
-        self.ic = QLabel()
-        self.ic.setPixmap(theme.pixmap("circle-check", theme.TEXT, 16))
-        lay.addWidget(self.ic, 0, Qt.AlignTop)
+        lay.setContentsMargins(14, 9, 16, 9)
+        lay.setSpacing(9)
+        self.ic = IconLabel("circle-check", "OK", 16)
+        lay.addWidget(self.ic, 0, Qt.AlignVCenter)
         self.lbl = QLabel()
         self.lbl.setWordWrap(True)
-        self.lbl.setMaximumWidth(340)
+        self.lbl.setMaximumWidth(420)
         lay.addWidget(self.lbl)
         self.hide()
         self._fx = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._fx)
         self._anim = QPropertyAnimation(self._fx, b"opacity", self)
-        self._anim.setDuration(180)
+        self._anim.setDuration(theme.motion(200))
         self._slide = QPropertyAnimation(self, b"pos", self)
-        self._slide.setDuration(180)
+        self._slide.setDuration(theme.motion(200))
         self._slide.setEasingCurve(QEasingCurve.OutCubic)
         self._timer = QTimer(self, singleShot=True, timeout=self._fade_out)
 
@@ -344,17 +399,17 @@ class Toast(QFrame):
         return self.lbl.text()
 
     def show_message(self, text: str, ms: int = 3200, color: str = ""):
-        warn = color in (theme.WARN, theme.DANGER)
-        self.ic.setPixmap(theme.pixmap("triangle-alert" if warn else "circle-check",
-                                       color or theme.TEXT, 16))
+        role = theme.role_of(color) if color else ""
+        warn = role in ("WARN", "DANGER")
+        self.ic.set_icon("triangle-alert" if warn else "circle-check",
+                         role or ("WARN" if warn else "OK"))
         self.lbl.setText(text)
         self.adjustSize()
-        p = self.parentWidget()
-        end = QPoint(p.width() - self.width() - 16, p.height() - self.height() - 40)
+        end = self.target()
         self.raise_()
         self.show()
         self._slide.stop()
-        self._slide.setStartValue(end + QPoint(0, 12))
+        self._slide.setStartValue(end + QPoint(0, 8))
         self._slide.setEndValue(end)
         self._slide.start()
         self._anim.stop()

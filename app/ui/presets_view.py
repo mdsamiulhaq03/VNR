@@ -8,9 +8,13 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFormLayout, QHBoxLayout
                                QVBoxLayout, QWidget)
 
 from .. import voices
+from ..presets import CATEGORIES, best_for, category_of
 from ..voice_bank import VIBES
 from . import theme
-from .components import (EmptyState, SearchField, button, icon_button, label, section)
+from PySide6.QtGui import QColor, QFont
+
+from .components import (ColorDot, EmptyState, SearchField, button, icon_button, label,
+                         section)
 
 
 # ----------------------------------------------------------------- helpers
@@ -92,15 +96,19 @@ class ListRow(QWidget):
         col = QVBoxLayout()
         col.setSpacing(0)
         self.t = QLabel(title)
+        self.t.setObjectName("strong")
         self.t.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.s = label(subtitle, "mono")
+        self.s = label(subtitle, "footnote")
         self.s.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         col.addWidget(self.t)
         if subtitle:
             col.addWidget(self.s)
         lay.addLayout(col, 1)
-        self.r = label(trailing, "mono")
+        self.r = label(trailing, "number")
         lay.addWidget(self.r)
+        self.trail = QHBoxLayout()           # extra trailing widgets (e.g. a play button)
+        self.trail.setSpacing(2)
+        lay.addLayout(self.trail)
 
 
 class MasterDetail(QSplitter):
@@ -112,18 +120,17 @@ class MasterDetail(QSplitter):
         self.setChildrenCollapsible(False)
         self.setHandleWidth(1)
         left = QWidget()
-        left.setObjectName("inspector")
+        left.setObjectName("listPane")           # the splitter draws the dividing line
         left.setAttribute(Qt.WA_StyledBackground, True)
-        left.setStyleSheet(f"QWidget#inspector {{ border-left: none; border-right: 1px solid "
-                           f"{theme.BORDER}; }}")
         ll = QVBoxLayout(left)
         ll.setContentsMargins(12, 12, 12, 12)
-        ll.setSpacing(8)
+        ll.setSpacing(10)
         self.search = SearchField(search_placeholder)
         self.search.textChanged.connect(self._filter)
         ll.addWidget(self.search)
         self.list = QListWidget()
-        self.list.setStyleSheet("QListWidget { background: transparent; border: none; }")
+        self.list.setObjectName("plainList")
+        self.list.setFrameShape(QFrame.NoFrame)
         self.list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.list.currentItemChanged.connect(self._changed)
         ll.addWidget(self.list, 1)
@@ -141,7 +148,10 @@ class MasterDetail(QSplitter):
         self.setStretchFactor(1, 1)
         self.setSizes([280, 700])
         self._details: dict = {}
+        self._factories: dict = {}       # key -> callable building the detail on first use
         self._items: dict = {}
+        if theme.notifier is not None:
+            theme.notifier.changed.connect(lambda _m: self.retheme())
 
     def clear_all(self):
         self.list.clear()
@@ -149,27 +159,44 @@ class MasterDetail(QSplitter):
             self.stack.removeWidget(w)
             w.deleteLater()
         self._details.clear()
+        self._factories.clear()
         self._items.clear()
         self.stack.setCurrentWidget(self.empty)
 
     def add_header(self, text: str):
-        it = QListWidgetItem(text.upper())
+        """A group heading in the list (sentence case, secondary colour)."""
+        t = text.strip()
+        it = QListWidgetItem(t[:1].upper() + t[1:])
         it.setFlags(Qt.NoItemFlags)
         it.setData(Qt.UserRole, None)
-        it.setForeground(Qt.gray)
-        f = theme.mono(8)
+        it.setData(Qt.UserRole + 2, "header")
+        it.setForeground(QColor(theme.TEXT_2))
+        f = theme.sans(8.5, QFont.DemiBold)
         it.setFont(f)
+        it.setSizeHint(QSize(100, 30))
         self.list.addItem(it)
 
-    def add(self, key, row: QWidget, detail: QWidget, search_text: str = ""):
+    def retheme(self):
+        """Group headings are items, not widgets: give them the new theme's colour."""
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.data(Qt.UserRole + 2) == "header":
+                it.setForeground(QColor(theme.TEXT_2))
+
+    def add(self, key, row: QWidget, detail, search_text: str = ""):
+        """detail: the editor widget, or a callable that builds it when first shown (long
+        lists stay quick to load)."""
         it = QListWidgetItem()
         it.setData(Qt.UserRole, key)
         it.setData(Qt.UserRole + 1, (search_text or str(key)).lower())
         it.setSizeHint(QSize(100, 48))
         self.list.addItem(it)
         self.list.setItemWidget(it, row)
-        self.stack.addWidget(detail)
-        self._details[key] = detail
+        if callable(detail) and not isinstance(detail, QWidget):
+            self._factories[key] = detail
+        else:
+            self.stack.addWidget(detail)
+            self._details[key] = detail
         self._items[key] = it
 
     def set_row(self, key, row: QWidget):
@@ -178,7 +205,12 @@ class MasterDetail(QSplitter):
             self.list.setItemWidget(it, row)
 
     def detail(self, key):
-        return self._details.get(key)
+        w = self._details.get(key)
+        if w is None and key in self._factories:
+            w = self._factories.pop(key)()
+            self.stack.addWidget(w)
+            self._details[key] = w
+        return w
 
     def select(self, key):
         it = self._items.get(key)
@@ -191,7 +223,7 @@ class MasterDetail(QSplitter):
 
     def _changed(self, it, _prev):
         key = it.data(Qt.UserRole) if it else None
-        w = self._details.get(key)
+        w = self.detail(key) if key is not None else None
         self.stack.setCurrentWidget(w if w is not None else self.empty)
         self.selected.emit(key)
 
@@ -226,9 +258,7 @@ class PresetCard(QWidget):
         top = QHBoxLayout()
         top.setSpacing(8)
         self.ed_name = QLineEdit(p.get("name", ""))
-        self.ed_name.setStyleSheet("QLineEdit { font-size: 13pt; font-weight: 600; "
-                                   "background: transparent; border: none; padding: 2px 0; }"
-                                   "QLineEdit:focus { border-bottom: 1px solid #888888; }")
+        self.ed_name.setObjectName("titleEdit")
         self.ed_name.setToolTip("Rename this voice")
         self.ed_name.editingFinished.connect(
             lambda: self._emit({"name": self.ed_name.text().strip() or "Voice"}))
@@ -256,7 +286,24 @@ class PresetCard(QWidget):
         self.cb_style = combo(["whisper"], p.get("style", ""), ("Normal", ""))
         self.cb_vibe = combo(VIBES, p.get("vibe", ""), ("Neutral", ""))
         self.cb_vibe.setToolTip("How the voice talks: its reference clip is recorded in this "
-                                "mood (sultry, flirty, sweet, breathy, dominant, charming)")
+                                "mood")
+        self.cb_cat = shrinkable(QComboBox())
+        for c in CATEGORIES:
+            self.cb_cat.addItem(c["title"], c["key"])
+        self.cb_cat.setCurrentIndex(max(0, self.cb_cat.findData(category_of(p))))
+        self.cb_cat.setMaximumWidth(320)
+        self.cb_cat.setToolTip("The group this voice is listed under (Voices and Cast pages)")
+        self.cb_cat.currentIndexChanged.connect(
+            lambda _=0: self._emit({"category": self.cb_cat.currentData()}))
+        form.addRow(form_label("Category"), self.cb_cat)
+        self.ed_best = QLineEdit(", ".join(best_for(p)))
+        self.ed_best.setMaximumWidth(320)
+        self.ed_best.setPlaceholderText("e.g. heroine, childhood friend")
+        self.ed_best.setToolTip("Roles this voice suits, separated by commas: the Cast page "
+                                "suggests it for characters with these roles")
+        self.ed_best.editingFinished.connect(lambda: self._emit(
+            {"best_for": [r.strip() for r in self.ed_best.text().split(",") if r.strip()]}))
+        form.addRow(form_label("Best for"), self.ed_best)
         for cb, key, text in ((self.cb_age, "age", "Age"), (self.cb_pitch, "pitch", "Pitch"),
                               (self.cb_accent, "accent", "Accent"),
                               (self.cb_style, "style", "Style"),
@@ -288,20 +335,15 @@ class PresetCard(QWidget):
             i = cb.findData(p.get(key, ""))
             if i >= 0:
                 cb.setCurrentIndex(i)
+        i = self.cb_cat.findData(category_of(p))
+        if i >= 0:
+            self.cb_cat.setCurrentIndex(i)
+        if not self.ed_best.hasFocus():
+            self.ed_best.setText(", ".join(best_for(p)))
         state = "voice ready" if ready else "made on first use"
         note = p.get("note") or ""
         self.lbl_note.setText(f"{voices.instruct(p)}  ·  {state}" + (f"\n{note}" if note else ""))
         self._loading = False
-
-
-_VIBE_GROUP = {"sultry": "seductive", "breathy": "seductive", "flirty": "sweet",
-               "sweet": "sweet", "dominant": "mature"}
-
-
-def _group(p: dict) -> str:
-    if p.get("gender") == "male":
-        return "male"
-    return _VIBE_GROUP.get(p.get("vibe") or "", "female")
 
 
 class PresetsView(QWidget):
@@ -325,48 +367,53 @@ class PresetsView(QWidget):
         self._presets: dict[str, dict] = {}
 
     def install_toolbar(self, header):
-        header.add(button("Female", "plus", tip="Add a female voice",
-                          slot=lambda: self.add.emit("female")),
-                   button("Male", "plus", tip="Add a male voice",
-                          slot=lambda: self.add.emit("male")),
+        header.add(button("Reset to built-in", "rotate-ccw", "ghost",
+                          "Restore the built-in presets", slot=self.reset.emit),
                    None,
-                   button("Reset", "rotate-ccw", "ghost", "Restore the built-in presets",
-                          slot=self.reset.emit))
+                   button("Add female voice", "plus", tip="Add a female voice",
+                          slot=lambda: self.add.emit("female")),
+                   button("Add male voice", "plus", tip="Add a male voice",
+                          slot=lambda: self.add.emit("male")))
 
     def _row(self, p: dict, ready: bool) -> QWidget:
-        dot = QLabel()
-        dot.setFixedSize(8, 8)
-        dot.setStyleSheet(f"background:{theme.gender_color(p.get('gender'))}; border-radius:4px;")
-        sub = f"{nice(p.get('age', ''))} · {nice(p.get('pitch', ''))}"
-        if p.get("vibe"):
-            sub += f" · {nice(p['vibe'])}"
-        return ListRow(p.get("name", ""), sub,
-                       "●" if ready else "", dot)
+        dot = ColorDot(theme.gender_color(p.get("gender")), 8)
+        sub = (f"{nice(p.get('age', ''))}, {nice(p.get('pitch', '')).lower()}, "
+               f"{nice(p.get('accent', '').replace(' accent', '')) or 'any accent'}")
+        row = ListRow(p.get("name", ""), sub, "", dot)
+        if ready:
+            row.r.setText("Ready")
+            row.r.setToolTip("This voice is saved in VoiceStudio and starts at once")
+        return row
 
     def load(self, presets: list[dict], ready: set[str]):
         keep = self.md.current()
         self.md.clear_all()
         self.cards.clear()
-        groups = [("seductive", "Seductive"), ("sweet", "Sweet & flirty"),
-                  ("mature", "Mature & dominant"), ("female", "Female"), ("male", "Male")]
-        for gk, title in groups:
-            items = [p for p in presets if _group(p) == gk]
+        self._presets.clear()
+        for c in CATEGORIES:
+            items = [p for p in presets if category_of(p) == c["key"]]
             if not items:
                 continue
-            self.md.add_header(title)
+            self.md.add_header(f"{c['title']} · {', '.join(c['best_for'])}")
             for p in items:
-                card = PresetCard(p)
-                card.changed.connect(self.changed.emit)
-                card.reroll.connect(self.reroll.emit)
-                card.preview.connect(self.preview.emit)
-                card.duplicate.connect(self.duplicate.emit)
-                card.delete.connect(self.delete.emit)
-                card.update_preset(p, p["id"] in ready)
-                self.md.add(p["id"], self._row(p, p["id"] in ready), card,
-                            f"{p.get('name', '')} {p.get('note', '')} {p.get('accent', '')}")
-                self.cards[p["id"]] = card
                 self._presets[p["id"]] = p
-        self.md.select(keep if keep in self.cards else (presets[0]["id"] if presets else None))
+                self.md.add(p["id"], self._row(p, p["id"] in ready),
+                            lambda pid=p["id"], r=p["id"] in ready: self._card(pid, r),
+                            f"{p.get('name', '')} {p.get('note', '')} {p.get('accent', '')} "
+                            f"{c['title']} {' '.join(best_for(p))}".lower())
+        self.md.select(keep if keep in self._presets else (presets[0]["id"] if presets else None))
+
+    def _card(self, pid: str, ready: bool) -> "PresetCard":
+        p = self._presets[pid]
+        card = PresetCard(p)
+        card.changed.connect(self.changed.emit)
+        card.reroll.connect(self.reroll.emit)
+        card.preview.connect(self.preview.emit)
+        card.duplicate.connect(self.duplicate.emit)
+        card.delete.connect(self.delete.emit)
+        card.update_preset(p, ready)
+        self.cards[pid] = card
+        return card
 
     def update(self, p: dict, ready: bool):
         c = self.cards.get(p["id"])

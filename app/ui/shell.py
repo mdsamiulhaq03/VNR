@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPus
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import theme
-from .components import Dot, icon_button, label
+from .components import Dot, IconLabel, icon_button, label
 
 SIDEBAR_W, SIDEBAR_MINI = 208, 56
 
@@ -25,8 +25,9 @@ class NavButton(QPushButton):
         self.toggled.connect(lambda _on: self._update_icon())
 
     def _update_icon(self):
-        col = theme.TEXT if self.isChecked() else theme.TEXT_2
-        self.setIcon(theme.icon(self._icon, col, 16, active=theme.TEXT))
+        col = "ACCENT" if self.isChecked() else "TEXT_2"
+        self.setIcon(theme.icon(self._icon, col, 16, active="ACCENT" if self.isChecked()
+                                else "TEXT"))
 
     def set_compact(self, on: bool):
         self.setText("" if on else self._text)
@@ -51,8 +52,7 @@ class Sidebar(QWidget):
         if not pm.isNull():
             self.logo.setPixmap(pm.scaled(22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         top.addWidget(self.logo)
-        self.brand = label("VN Reader")
-        self.brand.setStyleSheet("font-weight: 600;")
+        self.brand = label("VN Reader", "brand")
         top.addWidget(self.brand, 1)
         self.b_collapse = icon_button("panel-left", "Collapse sidebar   Ctrl+B",
                                       self.toggle, size=15)
@@ -103,10 +103,12 @@ class Sidebar(QWidget):
         self.logo.setVisible(not on)
         for b in self.items:
             b.set_compact(on)
-        self.b_collapse.setIcon(theme.icon("panel-left", theme.TEXT_2, 15, active=theme.TEXT))
+        self.b_collapse.setIcon(theme.icon("panel-left", "TEXT_2", 15, active="TEXT"))
         self.b_collapse.setToolTip(("Expand" if on else "Collapse") + " sidebar   Ctrl+B")
         for extra in getattr(self, "compact_hide", []):
             extra.setVisible(not on)
+        for extra in getattr(self, "compact_show", []):
+            extra.setVisible(on)
 
 
 class PageHeader(QWidget):
@@ -161,17 +163,20 @@ class Page(QWidget):
 
 
 class FadeStack(QStackedWidget):
-    """Page stack with a short fade when switching (150 ms)."""
+    """Page stack with a short fade when switching (180 ms; none with reduced motion)."""
 
     def set_page(self, i: int):
         if i == self.currentIndex():
             return
         self.setCurrentIndex(i)
+        ms = theme.motion(180)
+        if not ms:
+            return
         w = self.currentWidget()
         fx = QGraphicsOpacityEffect(w)
         w.setGraphicsEffect(fx)
         a = QPropertyAnimation(fx, b"opacity", w)
-        a.setDuration(150)
+        a.setDuration(ms)
         a.setStartValue(0.0)
         a.setEndValue(1.0)
         a.setEasingCurve(QEasingCurve.OutCubic)
@@ -226,23 +231,37 @@ class TabsAdapter:
 
 
 class StatusSegment(QWidget):
+    """A piece of the status bar: optional dot or icon + text. Emits clicked when it
+    has a click action (set_clickable)."""
+    clicked = Signal(object)            # global position
+
     def __init__(self, icon: str = "", text: str = "", dot: bool = False):
         super().__init__()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 0, 6, 0)
-        lay.setSpacing(5)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(6)
         self.dot = Dot() if dot else None
         if self.dot:
             lay.addWidget(self.dot)
-        self.ic = QLabel()
         if icon:
-            self.ic.setPixmap(theme.pixmap(icon, theme.TEXT_2, 12))
+            self.ic = IconLabel(icon, "TEXT_2", 12)
             lay.addWidget(self.ic)
         self.text = QLabel(text)
         lay.addWidget(self.text)
+        self._clickable = False
 
     def set(self, text: str, color: str | None = None, pulse: bool = False, tip: str = ""):
         self.text.setText(text)
         if self.dot is not None and color:
             self.dot.set_color(color, pulse)
         self.setToolTip(tip)
+
+    def set_clickable(self, on: bool = True):
+        self._clickable = on
+        self.setCursor(Qt.PointingHandCursor if on else Qt.ArrowCursor)
+
+    def mousePressEvent(self, e):
+        if self._clickable and e.button() == Qt.LeftButton:
+            self.clicked.emit(self.mapToGlobal(self.rect().topLeft()))
+            return
+        super().mousePressEvent(e)

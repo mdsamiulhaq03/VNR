@@ -254,17 +254,84 @@ def _capitalize(text: str) -> str:
     return text
 
 
+# ------------------------------------------------------------ speaker-name tags
+# "Zalton (thinking)" / "Mika [whispering]": the same character, said in a mood.
+_THOUGHT_TAG = re.compile(r"\b(?:think|thought|inner|internal|monologue|mind"
+                          r"|to (?:her|him|my|them|your)sel)", _I)
+_NEUTRAL_TAG = re.compile(r"^(?:off-? ?screen|o\.?s\.?|v\.?o\.?|voice(?: only)?"
+                          r"|(?:on the |over the )?(?:phone|radio|intercom|speaker|tv)"
+                          r"|(?:phone|video) call|cell(?:phone)?|walkie(?:-talkie)?"
+                          r"|cont'?d|continued|memory|flashback|distant"
+                          r"|in the distance|announcement|broadcast)$", _I)
+_NAME_TAG = re.compile(r"^(.+?)\s*[(\[（【]\s*([^()\[\]（）【】]{1,24}?)\s*[)\]）】]\s*$")
+
+
+def mood_of_tag(tag: str) -> str | None:
+    """The mood a speaker-name tag stands for: "thinking" -> "thought", "whispering" ->
+    "whisper", "off-screen" -> "" (no mood). None = not a known tag (keep it in the name)."""
+    t = (tag or "").strip()
+    if not t:
+        return None
+    if _THOUGHT_TAG.search(t):
+        return "thought"
+    if _NEUTRAL_TAG.match(t):
+        return ""
+    m = _mood_of(t)
+    return m.name if m else None
+
+
+_PHONE_TAG = re.compile(r"\b(?:phone|call|cell|cellphone|mobile|video call|voicemail)\b", _I)
+_RADIO_TAG = re.compile(r"\b(?:radio|intercom|walkie|walkie-talkie|speaker|loudspeaker|tv"
+                        r"|television|p\.?a\.?|announcement|broadcast|earpiece|comms?)\b", _I)
+
+
+def tag_effect(name: str) -> str:
+    """The sound of a speaker-name tag: "Mila (on the phone)" -> "phone", "Ops (radio)" ->
+    "radio", else ""."""
+    m = _NAME_TAG.match((name or "").strip())
+    if not m:
+        return ""
+    tag = m.group(2)
+    if _PHONE_TAG.search(tag):
+        return "phone"
+    if _RADIO_TAG.search(tag):
+        return "radio"
+    return ""
+
+
+def split_hint(hint: str) -> tuple[str, str]:
+    """A line's hint is "mood" or "mood+effect" ("whisper+phone", "+radio")."""
+    mood, _, effect = (hint or "").partition("+")
+    return mood, effect
+
+
+def split_speaker_tag(name: str) -> tuple[str, str]:
+    """("Zalton (thinking)") -> ("Zalton", "thought"). Unknown tags ("Bro (Mark)") and
+    names that are only a tag are returned unchanged with no mood."""
+    m = _NAME_TAG.match((name or "").strip())
+    if not m:
+        return name, ""
+    base, tag = m.group(1).strip(), m.group(2)
+    mood = mood_of_tag(tag)
+    if mood is None or not base or not re.search(r"\w", base):
+        return name, ""
+    return base, mood
+
+
 STRENGTHS = ("subtle", "normal", "strong")
 
 
 def parse(text: str, *, act: bool = True, vocalize: bool = True,
-          tags: set[str] | list[str] | None = None, strength: str = "normal") -> Directed:
+          tags: set[str] | list[str] | None = None, strength: str = "normal",
+          hint: str = "") -> Directed:
     """Stage directions out, mood in.
 
     act: perform the mood (shaping, sounds, tags); off = only remove what isn't spoken.
     vocalize: put a sound in place of actions like *moans* / *kisses*.
     tags: expression tags the TTS engine supports (None = none).
     strength: "subtle" (no emotional voices, half the speed change), "normal", "strong".
+    hint: a mood from the speaker's name tag ("Zalton (whispering)"); directions in the
+    text win over it, it wins over moods guessed from the wording.
     """
     if not text:
         return Directed("")
@@ -309,6 +376,9 @@ def parse(text: str, *, act: bool = True, vocalize: bool = True,
     if shouting:                                      # don't spell "WHAT" out
         spoken = _capitalize(_CAPS.sub(lambda m: m.group(0).lower(), spoken))
 
+    hint = split_hint(hint)[0]                 # (a "+phone" effect isn't a mood)
+    if mood is None and hint:
+        mood = BY_NAME.get(hint)
     if mood is None:
         moans = _moaning(spoken)
         if thought:

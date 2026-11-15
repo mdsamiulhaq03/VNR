@@ -14,13 +14,14 @@ are made in the background the first time a line needs them.
 """
 from __future__ import annotations
 
+import contextlib
 import threading
 from typing import Callable
 
 from . import audio_qa, voices
 from .config import Config
 from .tts.base import TTSError
-from .tts.voicestudio import VoiceStudioEngine
+from .tts.voicestudio import VoiceStudioEngine, is_temporary
 
 PREFIX = "VNR - "
 REF_TEXT = ("Hello there. This is my natural speaking voice, calm and clear. "
@@ -40,6 +41,16 @@ VIBE_SCRIPTS: dict[str, tuple[str, float]] = {
                  "you? I thought so.", 0.9),
     "charming": ("Hey… you look beautiful tonight. Stay a while. I want to hear everything "
                  "about you.", 0.9),
+    "shy": ("Um… hi. Sorry, I didn't mean to stare. I just… I wanted to say thank you, "
+            "for earlier. That's all.", 0.95),
+    "energetic": ("Okay, let's go! Today is going to be awesome. Come on, keep up, we've "
+                  "got so much to do!", 1.0),
+    "cool": ("Good evening. Everything is ready, as you asked. Let me know if you need "
+             "anything else.", 0.95),
+    "narrator": ("The rain had stopped by the time she reached the old station. The town "
+                 "was quiet, and the lights were still on.", 0.95),
+    "rough": ("Yo, what's up? Man, you look like you just woke up. Come on, the game's "
+              "about to start!", 1.0),
 }
 VIBES = [v for v in VIBE_SCRIPTS if v]
 
@@ -109,7 +120,8 @@ class VoiceBank:
             try:
                 pid = self._create(design)
             except TTSError as e:
-                self._failed.add(key)
+                if not is_temporary(e):          # busy / offline: try again next time
+                    self._failed.add(key)
                 self.on_status(f"Couldn't make a stable voice for {design.get('label')}: {e}")
                 return ""
             with self.cfg._lock:
@@ -118,9 +130,17 @@ class VoiceBank:
         self.on_ready(key)
         return pid
 
+    def _background(self):
+        """VoiceStudio requests in here wait while a line is being voiced."""
+        bg = getattr(self.vs, "background", None)
+        return bg() if bg else contextlib.nullcontext()
+
     def prewarm(self, design: dict) -> None:
         if self.enabled() and not self.cached(design):
-            threading.Thread(target=self.get_profile, args=(dict(design),), daemon=True).start()
+            def work(d=dict(design)):
+                with self._background():
+                    self.get_profile(d)
+            threading.Thread(target=work, daemon=True).start()
 
     def forget(self, design: dict) -> None:
         """Drop (and delete) the clone for a design and its mood variants, e.g. after a
@@ -165,7 +185,9 @@ class VoiceBank:
 
     def _make_variant(self, design: dict, mood: str, key: str) -> None:
         try:
-            if self._build_variant(design, mood, key):
+            with self._background():
+                ok = self._build_variant(design, mood, key)
+            if ok:
                 self.on_status(f"{design.get('label')}'s {mood} voice is ready")
         finally:
             with self._guard:
@@ -183,7 +205,8 @@ class VoiceBank:
             try:
                 pid = self._create_variant(design, mood, base)
             except TTSError as e:
-                self._failed.add(key)
+                if not is_temporary(e):          # busy / offline: try again next time
+                    self._failed.add(key)
                 self.on_status(f"Couldn't make {design.get('label')}'s {mood} voice: {e}")
                 return ""
             with self.cfg._lock:

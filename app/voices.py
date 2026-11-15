@@ -154,6 +154,8 @@ def effective(rec: dict, presets: dict[str, dict], accent_override: str = "",
         d["accent"] = rec["accent"]
     if rec.get("age_override"):            # per-character age, preset or custom
         d["age"] = rec["age_override"]
+    if rec.get("pitch_override"):          # e.g. "Younger Zalton": a step higher
+        d["pitch"] = rec["pitch_override"]
     if accent_override:                    # global accent for every voice
         d["accent"] = accent_override
     if d["accent"] in ("", "Auto"):
@@ -207,25 +209,117 @@ def custom_design(name: str, gender: str, others: dict[str, dict]) -> dict:
     }
 
 
-def pick_preset(gender: str, others: dict[str, dict], presets: list[dict]) -> str:
-    """An unused preset of that gender in this game ('' if they're all taken)."""
+# Order in which new characters get voices: one from each category in turn, so a new
+# cast is varied (narrator voices only for the narrator).
+AUTO_ORDER = {"female": ["sweet", "flirty", "seductive", "energetic", "cool", "mature", "shy"],
+              "male": ["lead", "charming", "rough", "commanding"]}
+
+
+def pick_preset(gender: str, others: dict[str, dict], presets: list[dict], role: str = "",
+                narrator: bool = False) -> str:
+    """An unused preset for a new character ('' if they're all taken): from the role's
+    category first, else one category after another (round robin)."""
+    from .presets import ROLE_CATEGORY, category_of
     used = {o.get("preset") for o in others.values() if o.get("preset")}
-    pool = [p for p in presets if gender == "unknown" or p.get("gender") == gender]
-    # Whisper voices (Yumi, Raven) whisper every line: only when nothing else is free.
-    pool.sort(key=lambda p: p.get("style") == "whisper")
-    for p in pool:
-        if p["id"] not in used:
-            return p["id"]
-    return ""
+    free = [p for p in presets if p["id"] not in used]
+    if narrator:
+        pool = [p for p in free if category_of(p) == "narrator"]
+        return pool[0]["id"] if pool else ""
+    free = [p for p in free if category_of(p) != "narrator" and
+            (gender == "unknown" or p.get("gender") == gender)]
+    if not free:
+        return ""
+    order = AUTO_ORDER.get(gender) or AUTO_ORDER["female"] + AUTO_ORDER["male"]
+    want = ROLE_CATEGORY.get(role)
+    if want:
+        order = [want] + [c for c in order if c != want]
+    rank = {c: i for i, c in enumerate(order)}
+    pos: dict[str, int] = {}
+    keyed = []
+    count: dict[str, int] = {}
+    for p in presets:                       # position of each preset in its category
+        if p.get("style") == "whisper":     # (whispers don't take a place)
+            continue
+        c = category_of(p)
+        pos[p["id"]] = count.get(c, 0)
+        count[c] = count.get(c, 0) + 1
+    for p in free:
+        c = category_of(p)
+        first = 0 if want and c == want else 1           # the role's category: all first
+        # Whisper voices whisper every line: only when nothing else is free.
+        keyed.append((p.get("style") == "whisper", first, pos.get(p["id"], 99),
+                      rank.get(c, len(rank)), p["id"]))
+    keyed.sort()
+    return keyed[0][-1]
+
+
+# "Younger Zalton" / "Old Zalton" / "Zalton (young)": the same person at another age.
+_YOUNGER = ("young", "younger", "little", "kid", "child", "teen", "teenage", "past")
+_OLDER = ("old", "older", "elder", "adult", "grown-up", "future")
+_AGE_PREFIX = re.compile(r"^(" + "|".join(_YOUNGER + _OLDER) + r")\s+(.+)$", re.I)
+_AGE_TAG = re.compile(r"^(.+?)\s*[(\[]\s*(" + "|".join(_YOUNGER + _OLDER) + r")\s*[)\]]\s*$",
+                      re.I)
+
+
+def age_variant(name: str, others: dict[str, dict]) -> tuple[str, int] | None:
+    """(base character, -1 younger / +1 older) when `name` is an existing character at
+    another age, else None."""
+    m = _AGE_PREFIX.match((name or "").strip())
+    word, base = (m.group(1), m.group(2)) if m else (None, None)
+    if not m:
+        m = _AGE_TAG.match((name or "").strip())
+        if m:
+            base, word = m.group(1), m.group(2)
+    if not base:
+        return None
+    lower = {k.lower(): k for k in others if k != NARRATOR}
+    real = lower.get(base.strip().lower())
+    if not real:
+        return None
+    return real, (-1 if word.lower() in _YOUNGER else 1)
+
+
+def _shift(items: list[str], value: str, step: int) -> str:
+    i = items.index(value) if value in items else 0
+    return items[max(0, min(len(items) - 1, i + step))]
+
+
+def related_voice(base: dict, step: int, presets: list[dict]) -> dict:
+    """The base character's voice, a step younger (higher) or older (lower). Ages stay
+    adult (never below young adult)."""
+    out = {k: base[k] for k in ("gender", "preset", "accent", "vibe", "seed", "age", "pitch",
+                                "style", "voice_override", "role") if k in base}
+    out["gender_auto"] = base.get("gender_auto", True)
+    p = {x["id"]: x for x in presets}.get(base.get("preset") or "")
+    src = p if p else base
+    age = base.get("age_override") or src.get("age") or "young adult"
+    pitch = base.get("pitch_override") or src.get("pitch") or "moderate pitch"
+    new_age = _shift(ADULT_AGES, age if age in ADULT_AGES else "young adult", step)
+    if new_age != age:
+        out["age_override"] = new_age
+    elif base.get("age_override"):
+        out["age_override"] = base["age_override"]
+    out["pitch_override"] = _shift(PITCHES, pitch, -step)       # younger: higher
+    return out
 
 
 def complete_character(name: str, rec: dict, others: dict[str, dict],
                        presets: list[dict]) -> dict:
     """Fill in a new, legacy (v2) or pre-preset (v3) character record."""
+    rel = age_variant(name, others) if not rec else None
+    if rel is not None:                       # "Younger Zalton": Zalton's voice, younger
+        base, step = rel
+        out = related_voice(others[base], step, presets)
+        out["variant_of"] = base
+        out.setdefault("voice_override", "")
+        return out
     gender = rec.get("gender") or guess_gender(name)
     out = {"gender_auto": rec.get("gender_auto", True), "voice_override": ""}
     out.update(custom_design(name, gender, others))
-    out["preset"] = "" if name == NARRATOR else pick_preset(gender, others, presets)
+    out["preset"] = pick_preset(gender, others, presets, rec.get("role", ""),
+                                narrator=name == NARRATOR)
+    if rec.get("role"):
+        out["role"] = rec["role"]
     if out["preset"]:
         out["accent"] = ""          # "" = use the preset's own accent
     if rec.get("voice_override"):

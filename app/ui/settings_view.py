@@ -17,9 +17,15 @@ from ..sources import preprocess
 
 MODES = [("learn", "Auto + learned text colour (recommended)"), ("auto", "Auto"),
          ("color", "Text colour only (pick it below)"), ("off", "Off")]
-QUALITY = [("fast", "Fast: starts talking quickest"), ("balanced", "Balanced (recommended)"),
-           ("best", "Best: slowest")]
-QUALITY_STEPS = {"fast": 8, "balanced": 16, "best": None}
+# Delivery time = making a line's first sentence (measured on an RTX 3060 Ti: 6 steps
+# 1.0 s, 12 steps 1.5 s, 32 steps 3.3 s). Fewer steps are faster but rougher: 4-8 steps
+# can crackle a little.
+QUALITY = [("fast", "Instant: about 1 s, rougher voice (may crackle a little)"),
+           ("balanced", "Balanced: about 1.5 s, good voice"),
+           ("best", "Best: about 3 s, cleanest, most natural voice")]
+# Diffusion steps per quality (None = VoiceStudio's default, 32).
+QUALITY_STEPS = {"fast": 6, "balanced": 12, "best": None}
+QUICK_STEPS = 16       # quick start on Best: first sentence about 1.7 s instead of 3 s (no crackle)
 NAME_MODES = [("auto", "Auto-detect (recommended)"), ("always", "Always: top line is the name"),
               ("never", "Never: no names in this game")]
 HOTKEY_LABELS = {"toggle": "Start / stop reading", "replay": "Replay last line",
@@ -113,6 +119,7 @@ class _Sections:
 
 
 SECTIONS = [  # (nav title, icon, description), in the order the groups are built
+    ("Appearance", "sun", "Light, dark, or the same as Windows."),
     ("General", "app-window", "Window and system tray behaviour."),
     ("Text recognition", "scan-text", "How the game text is read from the screen."),
     ("Hotkeys", "keyboard", "Global shortcuts. They work while the game has focus."),
@@ -129,6 +136,9 @@ class SettingsView(QWidget):
     accent_changed = Signal()
     names_changed = Signal(bool)
     tray_changed = Signal()
+    chat_head_changed = Signal()
+    theme_changed = Signal(str)          # "system" / "light" / "dark"
+    float_style_changed = Signal(str)    # "bubble" / "mini"
 
     def __init__(self, cfg, grab_text: Callable[[], Image.Image | None],
                  run_ocr: Callable[[Image.Image], tuple[Image.Image, str]],
@@ -140,6 +150,21 @@ class SettingsView(QWidget):
         self.on_status = on_status
         s = cfg.settings
         outer = _Sections()
+
+        # Appearance
+        from .components import SegmentedControl, label as _label
+        ag0 = QGroupBox("Appearance")
+        af0 = QFormLayout(ag0)
+        self.seg_theme = SegmentedControl(
+            [("light", "Light"), ("dark", "Dark"), ("system", "Automatic")], s.theme,
+            icons={"light": "sun", "dark": "moon", "system": "monitor"})
+        self.seg_theme.setToolTip("Automatic follows Windows (Settings → Personalisation → "
+                                  "Colours) and changes with it.")
+        self.seg_theme.changed.connect(self.theme_changed.emit)
+        af0.addRow("Theme", self.seg_theme)
+        af0.addRow("", _label("Automatic switches between light and dark when Windows does.",
+                              "footnote", wrap=True))
+        outer.addWidget(ag0)
 
         # Window & tray
         wg = QGroupBox("Window && tray")
@@ -158,6 +183,26 @@ class SettingsView(QWidget):
         self.cb_tray.setEnabled(s.show_tray)
         self.cb_tray.toggled.connect(self._tray_toggled)
         wf.addWidget(self.cb_tray)
+        self.cb_chat_head = QCheckBox("Show floating controls over the game (always on top, "
+                                      "drag to move)")
+        self.cb_chat_head.setToolTip("Controls over the game. Clicking them never takes focus "
+                                     "from the game, and the reader never sees them.")
+        self.cb_chat_head.setChecked(s.show_chat_head)
+        self.cb_chat_head.toggled.connect(self._chat_head_toggled)
+        wf.addWidget(self.cb_chat_head)
+        from .components import SegmentedControl as _Seg
+        style_row = QHBoxLayout()
+        style_row.setSpacing(10)
+        style_row.addWidget(QLabel("Style:"))
+        self.seg_float = _Seg([("bubble", "Bubble"), ("mini", "Mini-player")], s.float_style,
+                              icons={"bubble": "app-window", "mini": "picture-in-picture-2"})
+        self.seg_float.setToolTip("Bubble: a small round button, click it for the controls.\n"
+                                  "Mini-player: a strip with the speaker, the line being "
+                                  "read and its progress.")
+        self.seg_float.changed.connect(self.float_style_changed.emit)
+        style_row.addWidget(self.seg_float)
+        style_row.addStretch(1)
+        wf.addLayout(style_row)
         outer.addWidget(wg)
 
         # OCR cleanup
@@ -253,10 +298,33 @@ class SettingsView(QWidget):
         self.ed_key.setPlaceholderText("only needed for a remote VoiceStudio")
         self.ed_key.editingFinished.connect(self._vs_changed)
         vf.addRow("API key:", self.ed_key)
+        self.cb_autostart = QCheckBox("Start VoiceStudio when it isn't running (when VN Reader "
+                                      "opens, and when you start reading)")
+        self.cb_autostart.setChecked(s.vs_autostart)
+        self.cb_autostart.toggled.connect(lambda on: self._flag("vs_autostart", on))
+        vf.addRow("", self.cb_autostart)
+        exe_row = QHBoxLayout()
+        exe_row.setSpacing(6)
+        from ..vs_launcher import default_exe
+        self.ed_vs_exe = QLineEdit(s.vs_exe)
+        self.ed_vs_exe.setPlaceholderText(default_exe() or "VoiceStudio.exe")
+        self.ed_vs_exe.setToolTip("Only needed when VoiceStudio is installed somewhere else")
+        self.ed_vs_exe.editingFinished.connect(
+            lambda: self._value("vs_exe", self.ed_vs_exe.text().strip()))
+        exe_row.addWidget(self.ed_vs_exe, 1)
+        b_browse = QPushButton("Browse…")
+        b_browse.clicked.connect(self._browse_vs_exe)
+        exe_row.addWidget(b_browse)
+        vf.addRow("VoiceStudio program:", exe_row)
         self.cb_narr = QCheckBox("Read lines with no speaker name (narration)")
         self.cb_narr.setChecked(s.read_narrator)
         self.cb_narr.toggled.connect(self._narr)
         vf.addRow("", self.cb_narr)
+        self.cb_away = QCheckBox("Pause when I switch to another program (continues when the "
+                                 "game is back in front)")
+        self.cb_away.setChecked(s.pause_when_away)
+        self.cb_away.toggled.connect(self._away)
+        vf.addRow("", self.cb_away)
         self.cb_names = QCheckBox("Speak character names (off: only the dialogue is spoken)")
         self.cb_names.setChecked(s.read_names)
         self.cb_names.toggled.connect(self._names)
@@ -296,12 +364,16 @@ class SettingsView(QWidget):
             self.cb_quality.addItem(label, key)
         self.cb_quality.setCurrentIndex(max(0, self.cb_quality.findData(s.vs_quality)))
         self.cb_quality.currentIndexChanged.connect(self._quality)
-        vf.addRow("Voice quality:", self.cb_quality)
-        self.cb_quick = QCheckBox("Quick start: first sentence on fast quality "
-                                  "(the voice starts ~1 s sooner)")
-        self.cb_quick.setToolTip("The rest of the line uses the quality above, made while the "
-                                 "first sentence plays. Same voice, slightly rougher first "
-                                 "sentence.")
+        self.cb_quality.setToolTip("Time until the voice starts: the first sentence of a line "
+                                   "(the rest is made while it plays). Long sentences take a "
+                                   "little longer; a slower graphics card takes longer too.")
+        vf.addRow("Speed / quality:", self.cb_quality)
+        self.cb_quick = QCheckBox("Quick start (Best): first sentence faster (about 1.7 s "
+                                  "instead of 3 s)")
+        self.cb_quick.setToolTip("The rest of the line uses Best quality, made while the "
+                                 "first sentence plays. Same voice; the first sentence is "
+                                 "made with 16 steps instead of 32. Instant and Balanced are "
+                                 "already faster than this.")
         self.cb_quick.setChecked(s.quick_start)
         self.cb_quick.toggled.connect(self._quick)
         vf.addRow("", self.cb_quick)
@@ -371,12 +443,15 @@ class SettingsView(QWidget):
         learned = getattr(self, "_learned", None)
         if self.cfg.settings.ocr_mode == "learn" and learned:
             c = learned
+        self.swatch.setObjectName("swatch")
+        self.swatch.setProperty("empty", not c)
         if c:
-            self.swatch.setStyleSheet(f"background: {QColor(*c).name()}; border:1px solid gray;")
+            # The game's text colour itself (data, not a theme colour).
+            self.swatch.setStyleSheet(f"QLabel#swatch {{ background: {QColor(*c).name()}; }}")
             src = "learned from this game's lines" if c is learned else "picked by you"
             self.swatch.setToolTip(f"RGB {list(c)} ({src})")
         else:
-            self.swatch.setStyleSheet("border:1px dashed gray;")
+            self.swatch.setStyleSheet("")
             self.swatch.setToolTip("not set yet: with 'Auto + learned text colour' it's "
                                    "learned after a few lines")
         if hasattr(self, "lbl_learned"):
@@ -451,8 +526,21 @@ class SettingsView(QWidget):
         self.cfg.save()
         self.voicestudio_changed.emit()
 
+    def _browse_vs_exe(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(self, "Find VoiceStudio", self.ed_vs_exe.text()
+                                              or self.ed_vs_exe.placeholderText(),
+                                              "Programs (*.exe)")
+        if path:
+            self.ed_vs_exe.setText(path)
+            self._value("vs_exe", path)
+
     def _narr(self, on: bool):
         self.cfg.settings.read_narrator = on
+        self.cfg.save()
+
+    def _away(self, on: bool):
+        self.cfg.settings.pause_when_away = on
         self.cfg.save()
 
     def _adv_key(self):
@@ -510,10 +598,8 @@ class SettingsView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         nav_box = QWidget()
-        nav_box.setObjectName("inspector")
+        nav_box.setObjectName("navPane")
         nav_box.setAttribute(Qt.WA_StyledBackground, True)
-        nav_box.setStyleSheet(f"QWidget#inspector {{ border-left: none; border-right: 1px solid "
-                              f"{theme.BORDER}; }}")
         nav_box.setFixedWidth(220)
         nl = QVBoxLayout(nav_box)
         nl.setContentsMargins(10, 14, 10, 10)
@@ -525,7 +611,11 @@ class SettingsView(QWidget):
             b = QPushButton(title)
             b.setObjectName("nav")
             b.setCheckable(True)
-            b.setIcon(theme.icon(icon, theme.TEXT_2, 15, active=theme.TEXT))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setIcon(theme.icon(icon, "TEXT_2", 15, active="TEXT"))
+            b.toggled.connect(lambda on, b=b, ic=icon: b.setIcon(
+                theme.icon(ic, "ACCENT" if on else "TEXT_2", 15, active="ACCENT" if on
+                           else "TEXT")))
             b.clicked.connect(lambda _=False, i=i: self.show_section(i))
             nl.addWidget(b)
             self._nav.append(b)
@@ -537,11 +627,19 @@ class SettingsView(QWidget):
             pl.addWidget(label(title, "pageTitle"))
             if desc:
                 pl.addWidget(label(desc, "muted", wrap=True))
-            pl.addSpacing(10)
+            pl.addSpacing(12)
             if grp is not None:
                 grp.setTitle("")
                 grp.setMaximumWidth(760)
-                grp.setStyleSheet("QGroupBox { margin-top: 0; padding: 0; }")
+                grp.setObjectName("settingsGroup")    # a card of rows
+                lay_ = grp.layout()
+                if lay_ is not None:
+                    lay_.setContentsMargins(18, 14, 18, 16)
+                    lay_.setSpacing(12)
+                    if isinstance(lay_, QFormLayout):
+                        lay_.setHorizontalSpacing(18)
+                        lay_.setVerticalSpacing(12)
+                        lay_.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 pl.addWidget(grp)
             else:
                 self._about(pl)
@@ -572,7 +670,7 @@ class SettingsView(QWidget):
                             "every character with their own voice.", "muted", wrap=True))
         lay.addSpacing(12)
         lay.addWidget(section("Open source"))
-        for name, lic in (("Geist Sans & Geist Mono, Vercel", "SIL Open Font License 1.1"),
+        for name, lic in (("Inter, Rasmus Andersson", "SIL Open Font License 1.1"),
                           ("Lucide icons", "ISC License"),
                           ("PaddleOCR models via RapidOCR", "Apache License 2.0"),
                           ("ONNX Runtime (DirectML)", "MIT License"),
@@ -581,7 +679,7 @@ class SettingsView(QWidget):
             row = QHBoxLayout()
             row.addWidget(label(name))
             row.addStretch(1)
-            row.addWidget(label(lic, "mono"))
+            row.addWidget(label(lic, "footnote"))
             lay.addLayout(row)
 
     def _tray_toggled(self, on: bool):
@@ -594,6 +692,17 @@ class SettingsView(QWidget):
         self.cfg.save()
         self.cb_tray.setEnabled(on)
         self.tray_changed.emit()
+
+    def _chat_head_toggled(self, on: bool):
+        self.cfg.settings.show_chat_head = on
+        self.cfg.save()
+        self.chat_head_changed.emit()
+
+    def set_chat_head_checked(self, on: bool):
+        """Keep the checkbox in step when the bubble is hidden from its own menu / the tray."""
+        self.cb_chat_head.blockSignals(True)
+        self.cb_chat_head.setChecked(on)
+        self.cb_chat_head.blockSignals(False)
 
     def _engine_changed(self):
         self.cfg.settings.ocr_engine = self.cb_engine.currentData()

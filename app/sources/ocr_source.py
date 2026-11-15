@@ -20,6 +20,7 @@ from typing import Callable
 import numpy as np
 from PIL import Image
 
+from .. import latency
 from . import ocr_filter, preprocess
 from .capture import Capturer, CaptureSpec, WindowLost
 
@@ -375,14 +376,27 @@ def _same_line(a: tuple, b: tuple) -> bool:
     return (a[0] or "").lower() == (b[0] or "").lower() and _same(a[1], b[1])
 
 
+def _still_typing(before: str, now: str) -> bool:
+    """The text grew between two reads (a typewriter effect is still writing it out),
+    rather than the OCR wobbling by a letter. (A wobble judged as typing only costs one
+    more read.)"""
+    if len(now) <= len(before):
+        return False
+    stem = before[:max(0, len(before) - 3)].lower()     # its last letters may be half-drawn
+    return now.lower().startswith(stem)
+
+
 def _same(a: str, b: str) -> bool:
     return difflib.SequenceMatcher(None, a, b).ratio() >= 0.9
+
+
+SETTLE = 0.3      # s: read a changed area after this even if it never stops moving
 
 
 class OcrSource:
     def __init__(self, on_lines: Callable[[list, list, object], None],
                  on_status: Callable[[str], None] = lambda s: None,
-                 interval: float = 0.15,
+                 interval: float = 0.08,
                  on_preview: Callable[[Image.Image, list, object], None] =
                  lambda img, boxes, name_img: None,
                  on_candidate: Callable[[list, list, object], None] =
@@ -399,6 +413,7 @@ class OcrSource:
         self.spec = CaptureSpec()
         self.opts = OcrOptions()
         self._running = False
+        self.paused = False        # True: don't look at the screen (game not in front)
 
     def start(self) -> None:
         if self._running:
@@ -433,14 +448,18 @@ class OcrSource:
         cap = Capturer(on_note=self.on_status)
         last_sig = None
         stable = 0
+        dirty_since = None        # when the frame first changed since the last read
         last_spoken = None        # (name, text) last handed on
-        candidate = None          # first read of the current (settled) frame
-        done_frame = False        # already handled this frame
+        candidate = None          # unconfirmed read, waiting for a second one that agrees
+        first = None              # its (lines, boxes, reading)
+        done_frame = False        # nothing new to read until the frame changes
         lost = False
         self.on_status("Reading: watching the reading area")
         try:
             while self._running:
                 time.sleep(self.interval)
+                if self.paused:               # the game isn't in front: keep our place
+                    continue
                 spec, opts = self.spec, self.opts
                 if not spec.text:
                     continue
@@ -475,17 +494,27 @@ class OcrSource:
                         self.on_preview(img, [], name_img)
                     except RuntimeError:                # the window is closing
                         break
+                # Only the dialogue area decides "something changed": name boxes are
+                # often see-through, with an animated scene behind them. And a change
+                # only means "read again": whether it's a new line is decided by the
+                # text (two reads that agree), so a moving background can't hold a
+                # line back.
                 sig = preprocess.signature(img, opts.mode, opts.color, opts.tolerance)
-                if name_img is not None:
-                    sig = (sig, preprocess.signature(name_img, "off"))
-                if _changed_sig(last_sig, sig):
-                    last_sig, stable, candidate, done_frame = sig, 0, None, False
+                if _changed(last_sig, sig):
+                    if done_frame or candidate is None:
+                        latency.changed()
+                    last_sig, stable, done_frame = sig, 0, False
+                    dirty_since = dirty_since or now
+                else:
+                    stable += 1
+                if done_frame:
                     continue
-                stable += 1
-                # Two equal frames in a row = settled. (The confirming read that follows
-                # still guards against fades; it runs while the voice is being made.)
-                if stable < 1 or done_frame:
+                # A fresh change: wait one still frame (typing, fades), but never longer
+                # than SETTLE when the area keeps moving.
+                if candidate is None and stable < 1 and now - (dirty_since or now) < SETTLE:
                     continue
+                dirty_since = None
+                latency.mark("ocr" if candidate is None else "confirm-ocr")
                 try:
                     reading = ocr.read_dialogue(img, opts)
                     name = ocr.read_name(name_img, opts) if name_img is not None else None
@@ -496,12 +525,18 @@ class OcrSource:
                 self.on_preview(img, list(reading.result.boxes), name_img)
                 text = reading.text
                 if not text:
-                    done_frame = True
+                    done_frame, candidate = True, None
                     last_spoken = None if not reading.raw else last_spoken
                     continue
                 said = (name, text)
-                if candidate is None or not _same_line(candidate, said):
+                if last_spoken and _same_line(said, last_spoken):
+                    done_frame, candidate = True, None      # still the line we spoke
+                    continue
+                if candidate is None or not _same_line(candidate, said) \
+                        or _still_typing(candidate[1], text):
                     candidate = said          # wait for a second read that agrees
+                    first = (list(reading.lines), list(reading.result.boxes), reading)
+                    latency.mark("read")
                     try:                      # ...but start preparing the voice now
                         self.on_candidate(list(reading.lines), list(reading.result.boxes),
                                           {"name": name, "styled": reading.result.top_styled})
@@ -509,16 +544,19 @@ class OcrSource:
                         pass
                     continue
                 done_frame = True
-                if last_spoken and _same_line(said, last_spoken):
-                    continue
-                last_spoken = said
+                latency.mark("confirmed")
+                # The reads agree: pass on the FIRST read, the exact text whose voice is
+                # already being made (a second read often differs by a letter, which
+                # would throw that work away and start over).
+                said, (lines, boxes, reading) = candidate, first
+                last_spoken, candidate = said, None
                 try:                      # for learning this game's dialogue colour
-                    colour = dialogue_colour(img, list(reading.result.boxes),
-                                             skip_top=name is None and len(reading.lines) > 1)
+                    colour = dialogue_colour(img, boxes,
+                                             skip_top=said[0] is None and len(lines) > 1)
                 except Exception:
                     colour = None
-                self.on_lines(list(reading.lines), list(reading.result.boxes),
-                              {"name": name, "styled": reading.result.top_styled,
-                               "colour": colour})
+                self.on_lines(lines, boxes,
+                              {"name": said[0], "styled": reading.result.top_styled,
+                               "colour": colour, "name_img": name_img})
         finally:
             cap.close()

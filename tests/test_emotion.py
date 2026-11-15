@@ -274,7 +274,7 @@ def test_new_install_is_not_migrated_again():
     c = Config(d / "settings.json")
     c.settings.presets.append(presets.new_preset("female"))
     c.save()
-    assert len(Config(d / "settings.json").settings.presets) == 20
+    assert len(Config(d / "settings.json").settings.presets) == len(presets.defaults()) + 1
 
 
 # ------------------------------------------------------------ auto-detect areas
@@ -341,11 +341,13 @@ def test_aroused_variant_is_remade_and_old_one_pruned():
 def test_whisper_presets_are_picked_last():
     ps = presets.defaults()
     chars: dict = {}
-    for i in range(13):
-        chars[f"g{i}"] = voices.complete_character(f"g{i}", {"gender": "female"}, chars, ps)
     whisper = {x["id"] for x in ps if x.get("style") == "whisper"}
+    n = sum(x["gender"] == "female" and x["category"] != "narrator" and x["id"] not in whisper
+            for x in ps)
+    for i in range(n):
+        chars[f"g{i}"] = voices.complete_character(f"g{i}", {"gender": "female"}, chars, ps)
     assert not any(c["preset"] in whisper for c in chars.values())
-    nxt = voices.complete_character("g13", {"gender": "female"}, chars, ps)
+    nxt = voices.complete_character("next", {"gender": "female"}, chars, ps)
     assert nxt["preset"] in whisper                           # only when the rest are taken
 
 

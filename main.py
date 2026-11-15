@@ -134,8 +134,9 @@ def main() -> int:
     icon = os.path.join(base, "assets", "vnr.ico")
     if os.path.exists(icon):
         app.setWindowIcon(QIcon(icon))
-    theme.apply(app)
-    win = MainWindow(Config())
+    cfg = Config()
+    theme.apply(app, cfg.settings.theme)      # before any window: no flash of the other theme
+    win = MainWindow(cfg)
     win.show()
     return app.exec()
 

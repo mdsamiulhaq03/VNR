@@ -15,7 +15,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import emotion, voices
+from . import emotion, latency, voices
 from .text_clean import split_sentences
 from .tts.base import TTSEngine, TTSError
 from .tts.sapi_fallback import PREFIX as SAPI_PREFIX
@@ -30,6 +30,9 @@ class Line:
     char: dict = field(default_factory=dict)     # character record (voice_override etc.)
     language: str = ""                           # ISO 639-1, e.g. "en"
     design: dict = field(default_factory=dict)   # effective voice design (app/voices.py)
+    mood_hint: str = ""                          # mood from the name tag ("X (whispering)")
+    effect: str = ""                             # "phone" / "radio" sound, "" = none
+    uid: int = 0                                 # tells this line's sentences apart
 
 
 Attempt = tuple[TTSEngine, str, dict]            # engine, voice id, synth options
@@ -64,6 +67,9 @@ class SpeechQueue:
         self._pending: Line | None = None
         self._gen = 0
         self.last: Line | None = None
+        # The sentences each recent line is spoken as (uid -> list), so the screen can
+        # highlight the one playing (the player reports (uid, index, count) tags).
+        self.sentences: OrderedDict[int, list[str]] = OrderedDict()
         self._stop = False
         self._thread = threading.Thread(target=self._run, name="speech", daemon=True)
         self._thread.start()
@@ -157,13 +163,23 @@ class SpeechQueue:
 
             finished = True
             quick = self.quick_steps()
-            for i, sentence in enumerate(split_sentences(d.spoken)):
+            parts = split_sentences(d.spoken)
+            self.sentences[line.uid] = parts
+            while len(self.sentences) > 20:
+                self.sentences.popitem(last=False)
+            from .audio import effects
+            fx = effects.get(line.effect)
+            for i, sentence in enumerate(parts):
                 if gen != self._gen:
                     finished = False
                     break
                 steps = quick if i == 0 else None
+                how: list = []
                 audio = self._abandonable(
-                    lambda s=sentence, st=steps: self._synth_any(plan, s, speed, st), gen)
+                    lambda s=sentence, st=steps, h=how: self._synth_any(plan, s, speed, st, h),
+                    gen)
+                if i == 0:
+                    latency.mark("voice", how[0] if how else "")
                 if audio is _ABANDONED or audio is None:
                     finished = audio is None          # a failed line still counts as done
                     break
@@ -172,6 +188,11 @@ class SpeechQueue:
                         finished = False
                         break
                     try:
+                        if fx is None:
+                            self.player.enqueue_bytes(audio, (line.uid, i, len(parts)))
+                        else:                # the cache keeps the clean audio
+                            self.player.enqueue_bytes(audio, (line.uid, i, len(parts)), fx)
+                    except TypeError:        # a player without tags (older / test players)
                         self.player.enqueue_bytes(audio)
                     except Exception as e:   # bad audio / no output device
                         self.on_status(f"Playback error: {e}")
@@ -185,7 +206,7 @@ class SpeechQueue:
         act = self.expressive()
         return emotion.parse(line.text, act=act, vocalize=self.vocalize(),
                              tags=self.expression_tags if act else None,
-                             strength=self.strength())
+                             strength=self.strength(), hint=line.mood_hint)
 
     def _variant(self, line: Line, d: emotion.Directed, profile_id: str) -> str:
         """The emotional clone for this mood if it's ready, else the normal clone (the
@@ -234,10 +255,11 @@ class SpeechQueue:
         return box.get("r")
 
     # ---- prefetch ----
-    def prefetch(self, line: Line) -> None:
+    def prefetch(self, line: Line, background: bool = False) -> None:
         """Start making the first sentence of a line that is probably coming (the OCR is
-        still confirming it). Nothing is played; say() later finds the audio ready, or
-        waits for this request instead of sending a second one."""
+        still confirming it, or it's the next line of the game's script). Nothing is
+        played; say() later finds the audio ready, or waits for this request instead of
+        sending a second one. background: a guess, so it waits for the line being read."""
         if self.primary is None or not self.primary.available():
             return
         override = (line.char or {}).get("voice_override") or ""
@@ -259,9 +281,17 @@ class SpeechQueue:
         say, o = self._prepared(engine, opts, sentences[0], self.quick_steps())
         speed = self.speed_getter() * d.speed
 
+        latency.mark("prefetch")
+
+        bg = getattr(engine, "background", None) if background else None
+
         def job():
             try:
-                self._synth(engine, voice, o, say, speed)
+                if bg is not None:
+                    with bg():
+                        self._synth(engine, voice, o, say, speed)
+                else:
+                    self._synth(engine, voice, o, say, speed)
             except Exception:
                 pass                                 # say() will retry and report
         threading.Thread(target=job, name="prefetch", daemon=True).start()
@@ -280,7 +310,7 @@ class SpeechQueue:
         return say, opts
 
     def _synth_any(self, plan: list[Attempt], text: str, speed: float,
-                   steps: int | None = None) -> bytes | None:
+                   steps: int | None = None, how: list | None = None) -> bytes | None:
         last_err = None
         for i, (engine, voice, opts) in enumerate(plan):
             if engine is self.primary and not engine.available():
@@ -288,7 +318,7 @@ class SpeechQueue:
                 continue
             say, opts = self._prepared(engine, opts, text, steps)
             try:
-                audio = self._synth(engine, voice, opts, say, speed)
+                audio = self._synth(engine, voice, opts, say, speed, how)
                 if i > 0 and engine is self.fallback and engine is not plan[0][0]:
                     self.on_status(f"{last_err or 'VoiceStudio failed'}: using a Windows voice")
                 return audio
@@ -298,17 +328,24 @@ class SpeechQueue:
         return None
 
     def _synth(self, engine: TTSEngine, voice: str, opts: dict, text: str,
-               speed: float) -> bytes:
+               speed: float, how: list | None = None) -> bytes:
+        """how (optional) gets "ready" / "waited for prefetch" / "made now"."""
         key = (engine.name, voice, tuple(sorted(opts.items())), round(speed, 2), text)
+        note = "ready"
         while True:
             with self._cache_lock:
                 if key in self._cache:
                     self._cache.move_to_end(key)
+                    if how is not None:
+                        how.append(note)
                     return self._cache[key]
                 busy = self._inflight.get(key)
                 if busy is None:                 # nobody is making it: we do
                     busy = self._inflight[key] = threading.Event()
+                    if how is not None:
+                        how.append("made now")
                     break
+            note = "waited for prefetch"
             busy.wait(120)                       # same request already running: wait
             with self._cache_lock:
                 if key not in self._cache and self._inflight.get(key) is busy:

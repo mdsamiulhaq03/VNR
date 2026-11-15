@@ -82,6 +82,22 @@ def _pid(hwnd) -> int:
     return pid.value
 
 
+def exe_path(hwnd: int) -> str:
+    """Full path of the program that owns a window ("" if it can't be read)."""
+    pid = _pid(hwnd)
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return ""
+    try:
+        size = wt.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return buf.value
+        return ""
+    finally:
+        kernel32.CloseHandle(h)
+
+
 def _exe(pid: int) -> str:
     h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
@@ -182,19 +198,43 @@ def foreground_window() -> WindowInfo | None:
     return WindowInfo(int(hwnd), _title(hwnd) or "(untitled window)", _exe(pid))
 
 
+def foreground_kind() -> str:
+    """What the user is looking at: "own" (VN Reader or its bubble), "shell" (desktop,
+    taskbar), "" (nothing / minimized) or the app's exe name, e.g. "Code.exe"."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    if _pid(hwnd) == os.getpid():
+        return "own"
+    if user32.IsIconic(hwnd):
+        return ""
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    if buf.value in _SHELL_CLASSES:
+        return "shell"
+    return _exe(_pid(hwnd)) or "?"
+
+
+def is_away(kind: str, game_exe: str) -> bool:
+    """Is the user in another program than the game? (Our own windows don't count.)"""
+    if not game_exe or kind in ("", "own"):
+        return False
+    return kind.lower() != game_exe.lower()
+
+
 def cursor_pos() -> tuple[int, int]:
     p = wt.POINT()
     user32.GetCursorPos(ctypes.byref(p))
     return p.x, p.y
 
 
-def dark_title_bar(hwnd: int, caption: int = 0x000000, text: int = 0xEDEDED,
-                   border: int = 0x262626) -> None:
-    """Black native title bar (Windows 11: exact colours; Windows 10: dark mode only).
-    Colours are 0xRRGGBB; DWM wants 0x00BBGGRR."""
+def title_bar(hwnd: int, dark: bool, caption: int, text: int, border: int) -> None:
+    """Native title bar in the app's theme (Windows 11: exact colours; Windows 10: dark
+    or light only). Colours are 0xRRGGBB; DWM wants 0x00BBGGRR."""
     def bgr(c):
         return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
-    for attr, val in ((20, 1), (19, 1), (35, bgr(caption)), (36, bgr(text)),
+    on = 1 if dark else 0
+    for attr, val in ((20, on), (19, on), (35, bgr(caption)), (36, bgr(text)),
                       (34, bgr(border))):
         v = ctypes.c_int(val)
         try:
@@ -202,6 +242,12 @@ def dark_title_bar(hwnd: int, caption: int = 0x000000, text: int = 0xEDEDED,
                                          ctypes.sizeof(v))
         except OSError:
             pass
+
+
+def dark_title_bar(hwnd: int, caption: int = 0x000000, text: int = 0xF5F5F7,
+                   border: int = 0x38383A) -> None:
+    """Black native title bar (kept for older callers)."""
+    title_bar(hwnd, True, caption, text, border)
 
 
 def is_window(hwnd: int) -> bool:
@@ -305,3 +351,41 @@ def capture_window(hwnd: int) -> Image.Image | None:
     if hi <= 8:                 # all black: capture is blocked for this window
         return None
     return img
+
+
+# ---- floating overlays (the control bubble) ----
+GWL_EXSTYLE = -20
+WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOOLWINDOW = 0x00000080
+WDA_EXCLUDEFROMCAPTURE = 0x11        # Windows 10 2004+: hidden from screenshots / BitBlt
+
+user32.GetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
+user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.SetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_ssize_t]
+user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.SetWindowDisplayAffinity.argtypes = [wt.HWND, wt.DWORD]
+user32.SetWindowDisplayAffinity.restype = wt.BOOL
+
+
+def make_overlay(hwnd: int) -> bool:
+    """Clicks on this window never take focus from the game, and screen captures (OCR)
+    never see it. Returns False if capture exclusion isn't supported (older Windows)."""
+    try:
+        ex = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+        return bool(user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
+    except (OSError, AttributeError):
+        return False
+
+
+HWND_TOPMOST = -1
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_uint]
+
+
+def keep_topmost(hwnd: int) -> None:
+    """Put the window back above others (games that make themselves top-most) without
+    activating it."""
+    user32.SetWindowPos(hwnd, wt.HWND(HWND_TOPMOST), 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)

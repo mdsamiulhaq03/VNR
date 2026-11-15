@@ -11,29 +11,55 @@ from app.tts.base import TTSEngine
 from app.voice_bank import VIBE_SCRIPTS
 
 
-def test_default_presets_4_male_15_female_adults():
+def test_default_presets_60_in_12_categories():
     ps = presets.defaults()
-    assert sum(p["gender"] == "male" for p in ps) == 4
-    assert sum(p["gender"] == "female" for p in ps) == 15
-    assert len({p["id"] for p in ps}) == 19 and len({p["seed"] for p in ps}) == 19
+    assert len(ps) == 60
+    assert len({p["id"] for p in ps}) == 60 and len({p["seed"] for p in ps}) == 60
+    by_cat: dict = {}
     for p in ps:
-        assert p["age"] in ("young adult", "middle-aged")          # adults only
+        assert p["age"] in ("young adult", "middle-aged", "elderly")   # adults only
         assert (p.get("vibe") or "") in ("",) + tuple(VIBE_SCRIPTS)
+        assert p["vibe"] == "" or p["vibe"] in presets.VIBE_SAMPLES
         assert voices.instruct(voices.effective({"preset": p["id"]}, presets.by_id(ps)))
+        assert p["best_for"] and p["category"] in presets.CATEGORY
+        by_cat.setdefault(p["category"], []).append(p)
+    assert set(by_cat) == {c["key"] for c in presets.CATEGORIES}
+    for cat, items in by_cat.items():
+        assert len(items) == 5, cat
+        designs = {(p["age"], p["pitch"], p["accent"], p["style"]) for p in items}
+        assert len(designs) == 5, f"two {cat} voices share a design"
+        g = presets.CATEGORY[cat]["gender"]
+        assert g == "any" or all(p["gender"] == g for p in items)
+    assert sum(p.get("style") == "whisper" for p in by_cat["shy"]) <= 1
 
 
-def test_girls_get_every_preset_then_custom():
+def test_new_characters_get_varied_voices_then_custom():
     ps = presets.defaults()
     chars: dict = {}
-    for i in range(16):
+    n_female = sum(p["gender"] == "female" and p["category"] != "narrator" for p in ps)
+    for i in range(n_female + 1):
         chars[f"g{i}"] = voices.complete_character(f"g{i}", {"gender": "female"}, chars, ps)
     used = [c["preset"] for c in chars.values()]
-    assert len(set(used[:15])) == 15 and all(used[:15])
-    assert used[15] == ""                                  # 16th girl: custom voice
-    assert chars["g15"]["gender"] == "female" and chars["g15"]["seed"]
-    assert chars["g15"]["vibe"]                            # custom girls get a vibe too
+    cats = [presets.by_id(ps)[u]["category"] for u in used[:7]]
+    assert len(set(cats)) == 7                             # one from each category first
+    assert len(set(used[:n_female])) == n_female and all(used[:n_female])
+    assert used[n_female] == ""                            # all taken: custom voice
+    last = chars[f"g{n_female}"]
+    assert last["gender"] == "female" and last["seed"] and last["vibe"]
     m = voices.complete_character("Kenji", {}, chars, ps)
     assert presets.by_id(ps)[m["preset"]]["gender"] == "male"
+    whisper = [u for u in used[:n_female] if presets.by_id(ps)[u].get("style") == "whisper"]
+    assert set(used[n_female - len(whisper):n_female]) == set(whisper)   # whispers last
+
+
+def test_role_and_narrator_choose_the_category():
+    ps = presets.defaults()
+    pid = voices.pick_preset("female", {}, ps, role="tomboy")
+    assert presets.by_id(ps)[pid]["category"] == "energetic"
+    rec = voices.complete_character("Aida", {"gender": "female", "role": "boss"}, {}, ps)
+    assert presets.by_id(ps)[rec["preset"]]["category"] == "mature" and rec["role"] == "boss"
+    n = voices.complete_character(NARRATOR, {}, {}, ps)
+    assert presets.by_id(ps)[n["preset"]]["category"] == "narrator"
 
 
 def test_accent_precedence():
@@ -73,7 +99,8 @@ def test_v3_records_get_presets():
     rec = cfg.character("g", "Sayori")
     assert rec["preset"].startswith("f-") and rec["gender_auto"] is False
     assert cfg.design("g", "Sayori")["label"] == presets.by_id(cfg.settings.presets)[rec["preset"]]["name"]
-    assert cfg.character("g", NARRATOR)["preset"] == ""
+    narrator = cfg.character("g", NARRATOR)["preset"]
+    assert presets.by_id(cfg.settings.presets)[narrator]["category"] == "narrator"
 
 
 def test_recent_games():

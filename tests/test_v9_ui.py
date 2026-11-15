@@ -24,6 +24,7 @@ def win(app):
     cfg = Config(Path(tempfile.mkdtemp()) / "s.json")
     cfg.settings.muted = True
     cfg.settings.show_tray = False
+    cfg.settings.show_chat_head = False
     w = MainWindow(cfg)
     w.bank.enabled = lambda: False
     w.setWindowOpacity(0.0)           # a real window, but invisible during tests
@@ -35,13 +36,24 @@ def win(app):
     w.ocr.stop()
     w.hotkeys.clear()
     w.queue.shutdown()
+    w.chat_head.set_shown(False)
     w.hide()
+    # Delete it: windows left alive make every later theme switch restyle them all.
+    w.hook.stop()
+    for top in (getattr(w, "_guide", None), w.chat_head, getattr(w.chat_head, "pill", None),
+                w):
+        if top is not None:
+            top.deleteLater()
+    from PySide6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)   # really delete now
+    app.processEvents()
 
 
 def test_icons_and_fonts(app):
     from app.ui import theme
     assert theme.load_fonts()
-    assert theme.SANS == "Geist" and theme.MONO == "Geist Mono"
+    assert theme.SANS in ("Inter", "SF Pro Text")      # SF Pro when installed, else Inter
+    assert theme.MONO in ("Cascadia Mono", "Consolas")  # key caps only
     d = theme.asset_dir("icons")
     names = [f[:-4] for f in os.listdir(d) if f.endswith(".svg")]
     assert len(names) >= 60
@@ -60,13 +72,16 @@ def test_icons_and_fonts(app):
 
 
 def test_pages_and_shortcuts(win, app):
-    assert win.tabs.count() == 7
-    for i, key in enumerate(["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6"]):
+    assert win.tabs.count() == 8
+    for i, key in enumerate(["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6",
+                             "Ctrl+7"]):
         QTest.keySequence(win, key)
         app.processEvents()
         assert win.tabs.currentIndex() == i
-    win.tabs.setCurrentWidget(win.settings_view)
+    win.tabs.setCurrentWidget(win.games_view)
     assert win.tabs.currentIndex() == 6
+    win.tabs.setCurrentWidget(win.settings_view)
+    assert win.tabs.currentIndex() == 7
     win.tabs.setCurrentWidget(win.shots)
     assert win.tabs.currentWidget() is win.shots
     assert win.sidebar.items[1].isChecked()
@@ -126,9 +141,10 @@ def test_setup_dialog_uses_the_same_handlers(win, app):
     win._open_setup()
     app.processEvents()
     assert win.setup_dlg.isVisible()
-    win.ed_profile.setText("Another Game")
-    win.ed_profile.editingFinished.emit()
+    assert not hasattr(win, "ed_profile")             # no separate profile box any more
+    win._use_game("Another Game")
     assert win.game == "Another Game" and win.lbl_game.text() == "Another Game"
+    assert win.lbl_setup_game.text().startswith("Another Game")
     win.setup_dlg.accept()
 
 
@@ -136,7 +152,7 @@ def test_wheel_never_changes_a_setting(win, app):
     from PySide6.QtCore import QPoint, QPointF
     from PySide6.QtGui import QWheelEvent
     win.tabs.setCurrentIndex(6)
-    win.settings_view.show_section(1)
+    win.settings_view.show_section(2)                 # Text recognition
     app.processEvents()
     cb = win.settings_view.cb_engine
     before = cb.currentIndex()

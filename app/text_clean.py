@@ -66,3 +66,24 @@ def split_sentences(text: str, min_len: int = 12) -> list[str]:
 
 def clean_name(name: str) -> str:
     return _SPACE.sub(" ", _TAG.sub("", name or "")).strip()
+
+
+_CODEY = re.compile(r"<\s*(function|bound method|built-in|lambda|class|object)\b|\bobject at\b|"
+                    r"\bat 0x[0-9a-fA-F]+|0x[0-9a-fA-F]{6,}|^(None|True|False)$")
+_UNFILLED = re.compile(r"\[[^\]]*\]|\{[^}]*\}|%\(?\w*\)?[sd]\b")
+
+
+def looks_wrong(name: str) -> bool:
+    """A speaker name that can't be what the game shows: program code ('<function
+    pov_view at 0x…>'), unfilled placeholders ('[player_name]'), or not a name at all
+    (too long, a sentence, mostly symbols). Real names like "You", "???", "Bro #1",
+    "Seo-yeon", "Dr. Askarova" or "Zalton (thinking)" pass."""
+    n = (name or "").strip()
+    if not n:
+        return False                       # no name = narration, not a wrong name
+    if _CODEY.search(n) or _UNFILLED.search(n):
+        return True
+    if len(n) > 40 or len(n.split()) > 5:
+        return True
+    letters = sum(c.isalpha() for c in n)
+    return n not in ("???", "??", "?", "...", "…") and letters < len(n.replace(" ", "")) / 2

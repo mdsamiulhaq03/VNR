@@ -56,7 +56,7 @@ class DropZone(QLabel):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         cx, cy = self.width() / 2, self.height() / 2
-        pm = theme.pixmap("image-plus", theme.TEXT if self._hover else theme.TEXT_2, 28)
+        pm = theme.pixmap("image-plus", "ACCENT" if self._hover else "TEXT_2", 28)
         p.drawPixmap(int(cx - 14), int(cy - 52), pm)
         f = p.font()
         f.setPointSizeF(11)
@@ -72,10 +72,10 @@ class DropZone(QLabel):
         p.end()
 
     def _style(self):
-        border = theme.TEXT_2 if self._hover else theme.BORDER_HOVER
-        bg = theme.PANEL if self._hover else theme.BG_2
-        self.setStyleSheet(f"QLabel {{ border: 1px dashed {border}; border-radius: 12px;"
-                           f" background: {bg}; color: {theme.TEXT_2}; }}")
+        self.setObjectName("dropArea")
+        self.setProperty("hover", self._hover)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     # ---- drag & drop ----
     def dragEnterEvent(self, e):

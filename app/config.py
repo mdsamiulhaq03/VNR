@@ -39,13 +39,17 @@ def config_dir() -> Path:
 class Settings:
     voicestudio_url: str = "http://127.0.0.1:3900"
     voicestudio_api_key: str = ""
+    vs_autostart: bool = True             # start VoiceStudio when it isn't running
+    vs_exe: str = ""                      # its program ("" = where its installer puts it)
     save_vs_profiles: bool = True         # store each character's voice in VoiceStudio
-    vs_quality: str = "balanced"          # "fast" | "balanced" | "best"
+    vs_quality: str = "best"              # "fast" | "balanced" | "best"
     quick_start: bool = True              # first sentence on fast quality: starts ~1 s sooner
     volume: float = 1.0                   # 0..1
     speed: float = 1.0                    # 0.5..2.0
     muted: bool = False
     read_narrator: bool = True
+    pause_when_away: bool = True          # pause voice + reading when another app is in front
+    cast_group: str = "voice"             # Cast list: "voice" (by voice type) | "name" | "lines"
     name_mode: str = "auto"               # "auto" | "always" | "never": name on the top line
     ocr_text_region: list[int] | None = None   # [left, top, width, height] physical px
     ocr_name_region: list[int] | None = None   # optional separate name area (same format)
@@ -101,13 +105,20 @@ class Settings:
     inspector_width: int = 320
     close_to_tray: bool = True            # closing the window keeps it running in the tray
     tray_hint_shown: bool = False
+    show_chat_head: bool = True           # floating control bubble, always on top
+    chat_head_pos: list[int] | None = None   # its top-left, logical px (None = right edge)
+    float_style: str = "bubble"           # floating control: "bubble" or "mini" (mini-player)
+    mini_player_pos: list[int] | None = None
+    setup_done: bool = False              # the first-launch setup guide was shown
     # Built-in preset ids already offered once (new ones get added to old settings, but
     # a preset the user deleted is never brought back).
     preset_defaults_seen: list[str] = field(default_factory=lambda: [
         p["id"] for p in _default_presets()])
     presets_version: int = field(default_factory=lambda: _presets_version())
     whisper_fix: int = 1                  # 0 in older settings: see _whisper_fix()
+    quality_v3: int = 1                   # 0 in older settings: their quality moves to Best
     emotion_strength: str = "normal"      # subtle / normal / strong
+    theme: str = "system"                 # system / light / dark
 
 
 def _migrate(data: dict) -> dict:
@@ -143,7 +154,7 @@ def _replace_presets(s: "Settings") -> None:
         for name, rec in chars.items():
             if not isinstance(rec, dict):
                 continue
-            keep = {k: rec[k] for k in ("gender", "gender_auto") if k in rec}
+            keep = {k: rec[k] for k in ("gender", "gender_auto", "role") if k in rec}
             over = rec.get("voice_override") or ""
             if over and not (over.startswith("vs:") and over[3:] in old_ids):
                 keep["voice_override"] = over        # the user's own pick stays
@@ -199,6 +210,9 @@ class Config:
                 if p["id"] not in seen and p["id"] not in have:
                     s.presets.append(p)          # a new built-in voice
             s.preset_defaults_seen = sorted(seen | {p["id"] for p in defaults()})
+        if not data.get("quality_v3"):         # 4-8 step voices crackled: default to Best
+            s.vs_quality, s.quality_v3 = "best", 1
+            self._migrated = True
         if not data.get("whisper_fix"):
             _whisper_fix(s)
             self._migrated = True
@@ -234,6 +248,9 @@ class Config:
                 if rec and rec.get("legacy"):
                     keep["voice_override"] = rec.get("voice_override", "")
                 chars[key] = complete_character(key, keep, others, self.settings.presets)
+                import time
+                chars[key].setdefault("first_seen",
+                                      (rec or {}).get("first_seen") or time.time())
                 self.save()
             return chars[key]
 
@@ -244,6 +261,13 @@ class Config:
         rec = self.character(game, speaker)
         return effective(rec, by_id(self.settings.presets), self.settings.accent_override,
                          speaker or NARRATOR)
+
+    def game_info(self, game: str) -> dict:
+        """This game's record: exe, title, lines, last_played, and (once set) path (the
+        game's folder), engine ("renpy" | "unknown") and text_source
+        ("auto" | "hook" | "files" | "ocr")."""
+        with self._lock:
+            return self.settings.games.setdefault(game, {})
 
     def touch_game(self, game: str, exe: str = "", title: str = "") -> None:
         import time
@@ -282,6 +306,51 @@ class Config:
                 s.ocr_profile = rest[0][0] if rest else "My game"
             self.save()
 
+    def rename_game(self, old: str, new: str) -> str:
+        """Rename a game: its characters, fix-ups, words, folder and stats move with it.
+        Returns the new name ("" if it can't be used: empty or already taken)."""
+        new = new.strip()
+        s = self.settings
+        with self._lock:
+            if not new or new == old or new in s.games or new in s.voices:
+                return "" if new != old else old
+            for d in (s.games, s.voices, s.fixups):
+                if old in d:
+                    d[new] = d.pop(old)
+            if s.ocr_profile == old:
+                s.ocr_profile = new
+            self.save()
+        return new
+
+    def absorb_broken(self, game: str, name: str = "") -> int:
+        """Characters with names that can't be real ('<function pov_view at 0x…>', from
+        an older game hook): with `name` (the real name of a character whose name the
+        game works out at run time) the broken record becomes that character, keeping
+        its voice; extra broken records are folded in. Broken aliases are dropped.
+        Returns how many broken records were handled."""
+        from .text_clean import looks_wrong
+        with self._lock:
+            chars = self.characters(game)
+            broken = [n for n in chars if n != NARRATOR and looks_wrong(n)]
+            for rec in chars.values():
+                if rec.get("aliases"):
+                    rec["aliases"] = [a for a in rec["aliases"] if not looks_wrong(a)]
+            if not broken or not name or looks_wrong(name) or name == NARRATOR:
+                if not broken:
+                    self.save()
+                return 0
+            count = len(broken)
+            if name not in chars:                    # becomes the real character
+                first = broken.pop(0)
+                items = [(name if k == first else k, v) for k, v in chars.items()]
+                chars.clear()
+                chars.update(items)
+            dst = chars[name]
+            for b in broken:
+                dst["lines"] = int(dst.get("lines", 0)) + int(chars.pop(b).get("lines", 0))
+            self.save()
+            return count
+
     def delete_character(self, game: str, name: str) -> bool:
         if name == NARRATOR:
             return False
@@ -289,6 +358,55 @@ class Config:
             removed = self.characters(game).pop(name, None) is not None
             self.save()
             return removed
+
+    def tagged_pairs(self, game: str) -> list[tuple[str, str]]:
+        """Characters that are another character in a mood ("Zalton (thinking)" ->
+        "Zalton"), from before tags were understood. [(tagged name, base name)]"""
+        from .emotion import split_speaker_tag
+        out = []
+        for name in self.characters(game):
+            if name == NARRATOR:
+                continue
+            base, _mood = split_speaker_tag(name)
+            if base != name and base:
+                out.append((name, base))
+        return out
+
+    def fold_tagged(self, game: str) -> list[tuple[str, str]]:
+        """Merge every "X (tag)" record into X (renamed to X if there's no X yet). Also
+        drops aliases and fix-up rules that only stripped a tag (left by earlier manual
+        merges), so those lines get their mood again. Returns the pairs merged."""
+        from .emotion import split_speaker_tag
+        with self._lock:
+            pairs = self.tagged_pairs(game)
+            chars = self.characters(game)
+            for src, dst in pairs:
+                if src not in chars:
+                    continue
+                if dst in chars:
+                    a = chars.pop(src)
+                    b = chars[dst]
+                    b["lines"] = int(b.get("lines", 0)) + int(a.get("lines", 0))
+                    if a.get("aliases"):
+                        b["aliases"] = list(dict.fromkeys(b.get("aliases", []) + a["aliases"]))
+                else:                                   # becomes X, keeping its voice
+                    items = [(dst if k == src else k, v) for k, v in chars.items()]
+                    chars.clear()
+                    chars.update(items)
+            for name, rec in chars.items():
+                if rec.get("aliases"):
+                    rec["aliases"] = [a for a in rec["aliases"]
+                                      if split_speaker_tag(a)[0].lower() != name.lower()
+                                      or split_speaker_tag(a)[0] == a]
+            rules = self.game_fixups(game)
+            keep = [r for r in rules
+                    if not (r.get("find") and split_speaker_tag(r["find"])[0] != r["find"]
+                            and split_speaker_tag(r["find"])[0].lower()
+                            == (r.get("replace") or "").lower())]
+            if len(keep) != len(rules):
+                rules[:] = keep
+            self.save()
+            return pairs
 
     def merge_character(self, game: str, src: str, dst: str) -> None:
         """Fold a misread duplicate (src) into the real character (dst)."""

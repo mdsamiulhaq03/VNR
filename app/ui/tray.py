@@ -17,9 +17,11 @@ class Tray:
         self.a_auto = QAction("Auto-advance", m, checkable=True,
                               triggered=lambda on: win.cb_auto.setChecked(on))
         self.a_areas = QAction("", m, triggered=win._pick_areas_sequence)
+        self.a_bubble = QAction("Floating control bubble", m, checkable=True,
+                                triggered=lambda on: win._set_chat_head(on))
         self.a_quit = QAction("Quit VN Reader", m, triggered=win.quit_app)
         for a in (self.a_show, None, self.a_read, self.a_pause, self.a_auto, self.a_areas,
-                  None, self.a_quit):
+                  None, self.a_bubble, None, self.a_quit):
             m.addSeparator() if a is None else m.addAction(a)
         m.aboutToShow.connect(self.update_state)
         self.menu = m
@@ -41,6 +43,7 @@ class Tray:
         self.a_pause.setText(("▶  Resume" if w.player.paused else "⏸  Pause") +
                              self._key(w, "pause"))
         self.a_auto.setChecked(w.cfg.settings.auto_advance)
+        self.a_bubble.setChecked(w.cfg.settings.show_chat_head)
         self.a_areas.setText("⌨  Pick name + dialogue areas" + self._key(w, "areas"))
         self.icon.setToolTip(f"VN Reader · {'Reading' if reading else 'Stopped'} · {w.game}")
 
@@ -52,9 +55,7 @@ class Tray:
                 self.show_window()
 
     def show_window(self):
-        self.win.showNormal()
-        self.win.raise_()
-        self.win.activateWindow()
+        self.win._show_window()
 
     def notify(self, msg: str, ms: int = 4000):
         if self.icon.isVisible() and QSystemTrayIcon.supportsMessages():

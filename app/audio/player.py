@@ -41,19 +41,41 @@ class Player:
         self.volume = 1.0
         self.paused = False
         self.level = 0.0        # loudness of the audio being played right now (0..1)
+        self.on_start = lambda: None   # sound starts after silence (audio thread: keep cheap)
+        self._fresh = False
+        self._tags: deque = deque()    # one tag per queued chunk (e.g. which sentence)
+        self._cur_tag = None
+        self.effect = None             # optional fn(samples, sr) -> samples (radio / phone)
 
     # ---- public API ----
-    def enqueue_bytes(self, audio: bytes) -> None:
+    def enqueue_bytes(self, audio: bytes, tag=None, effect=None) -> None:
+        """tag: anything that says what this audio is (current() reports it while it
+        plays). effect: fn(samples, sr) -> samples applied before playing."""
         data, sr = sf.read(io.BytesIO(audio), dtype="float32", always_2d=True)
-        self.enqueue(data, sr)
+        self.enqueue(data, sr, tag, effect)
 
-    def enqueue(self, data: np.ndarray, sr: int) -> None:
+    def enqueue(self, data: np.ndarray, sr: int, tag=None, effect=None) -> None:
         data = _to_mono(data)
+        if effect is not None:
+            try:
+                data = np.asarray(effect(data, sr), dtype=np.float32)
+            except Exception:
+                pass                       # never lose the line over an effect
         self._ensure_stream(sr)
         data = _resample(data, sr, self._sr)
         with self._lock:
+            if self._idle.is_set():
+                self._fresh = True
             self._chunks.append(data)
+            self._tags.append(tag)
             self._idle.clear()
+
+    def current(self):
+        """(tag, how far through it 0..1) of the audio playing now; (None, 0) if none."""
+        with self._lock:
+            if self._cur is None or not len(self._cur):
+                return None, 0.0
+            return self._cur_tag, self._pos / len(self._cur)
 
     def play_bytes(self, audio: bytes) -> None:
         """Replace whatever is playing with this audio."""
@@ -63,8 +85,11 @@ class Player:
     def stop(self) -> None:
         with self._lock:
             self._chunks.clear()
+            self._tags.clear()
             self._cur = None
+            self._cur_tag = None
             self._pos = 0
+            self._fresh = False
             self._idle.set()
 
     def is_playing(self) -> bool:
@@ -110,6 +135,7 @@ class Player:
                     if not self._chunks:
                         break
                     self._cur = self._chunks.popleft()
+                    self._cur_tag = self._tags.popleft() if self._tags else None
                     self._pos = 0
                 take = min(frames - filled, len(self._cur) - self._pos)
                 out[filled:filled + take] = self._cur[self._pos:self._pos + take] * vol
@@ -121,4 +147,10 @@ class Player:
                 out[filled:] = 0
             if self._cur is None and not self._chunks:
                 self._idle.set()
+            started, self._fresh = self._fresh and filled > 0, self._fresh and filled == 0
+        if started:
+            try:
+                self.on_start()
+            except Exception:
+                pass
         self.level = float(np.sqrt(np.mean(out * out))) if frames else 0.0
